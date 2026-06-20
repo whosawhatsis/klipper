@@ -490,6 +490,48 @@ class ToolHead:
                                              drip_completion)
         # Move finished; cleanup any remnants on trapq
         self.motion_queuing.wipe_trapq(self.trapq)
+    # Like drip_move() but issues a sequence of moves as one abortable batch.
+    # 'segments' is a list of (newpos, speed, accel); accel may be None to use
+    # the toolhead default.  Used to run a vibrating, descending probe move
+    # that the endstop trigger can halt at any point.
+    def drip_move_sequence(self, segments, drip_completion):
+        moves = []
+        start_pos = self.commanded_pos
+        for newpos, speed, accel in segments:
+            end_pos = tuple(newpos[:3]) + tuple(start_pos[3:])
+            move = Move(self, start_pos, end_pos, speed)
+            if not move.move_d:
+                continue
+            if accel:
+                move.limit_speed(speed, accel)
+            self.kin.check_move(move)
+            moves.append(move)
+            start_pos = end_pos
+        if not moves:
+            return
+        kin_flush_delay = self.motion_queuing.get_kin_flush_delay()
+        self.dwell(kin_flush_delay)
+        self._process_lookahead()
+        # Load the whole sequence into the trapq (with junction blending)
+        for move in moves:
+            self.commanded_pos[:] = move.end_pos
+            self.lookahead.add_move(move)
+        flushed = self.lookahead.flush()
+        self._calc_print_time()
+        start_time = end_time = self.print_time
+        for move in flushed:
+            self.trapq_append(
+                self.trapq, end_time,
+                move.accel_t, move.cruise_t, move.decel_t,
+                move.start_pos[0], move.start_pos[1], move.start_pos[2],
+                move.axes_r[0], move.axes_r[1], move.axes_r[2],
+                move.start_v, move.cruise_v, move.accel)
+            end_time += move.accel_t + move.cruise_t + move.decel_t
+        self.lookahead.reset()
+        self.motion_queuing.drip_update_time(start_time, end_time,
+                                             drip_completion)
+        # Move finished; cleanup any remnants on trapq
+        self.motion_queuing.wipe_trapq(self.trapq)
     # Misc commands
     def stats(self, eventtime):
         est_print_time = self.mcu.estimated_print_time(eventtime)
