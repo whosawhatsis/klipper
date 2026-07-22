@@ -850,6 +850,26 @@ class ResonanceProbeCalibrate:
                     "Calibrate: no axis has a usable contact signal at %.1f Hz"
                     " (every axis's drop is within its own noise) - pick a"
                     " different mode" % freq)
+            # Keep accel_axis and the armed floors CONSISTENT.  accel_axis came
+            # from the mode search's ranking; the floors come from the amplitude
+            # sweep at the chosen frequency.  Those are different measurements
+            # and they can disagree - observed on hardware: the ranking said x
+            # while the floors armed only z (x=off drop 14% vs noise 7%, y=off
+            # 32% vs 15%, z=29% from 57% vs 22%), i.e. the saved config would
+            # have halted on z while claiming to detect on x.  The floors are
+            # the later and more directly relevant measurement, so let them win,
+            # and pick the armed axis with the most margin over its own noise.
+            armed = [a for a, f in enumerate(floors) if f < 0.95]
+            best = max(armed, key=lambda a: (0.5 * (m['all_axes'].get('xyz'[a])
+                                                    or {}).get('drop', 0.)
+                                             - ceils[a]))
+            if 'xyz'[best] != accel_axis:
+                gcmd.respond_info(
+                    "Calibrate: detection axis %s -> %s (the amplitude sweep's"
+                    " per-axis floors disagree with the mode ranking; the"
+                    " floors decide, so the armed axis and accel_axis match)"
+                    % (accel_axis, 'xyz'[best]))
+                accel_axis, out_idx = 'xyz'[best], best
         aph = m['accel_per_hz']
         baseline = m['baseline']
         rel_noise = m['rel_noise']
@@ -876,7 +896,8 @@ class ResonanceProbeCalibrate:
         return _plain({'sensitivity': sensitivity, 'halt': halt,
                        'baseline': baseline, 'rel_noise': rel_noise,
                        'max_drop': max_drop, 'accel_per_hz': aph,
-                       'contact_z': contact_z, 'floors': floors})
+                       'contact_z': contact_z, 'floors': floors,
+                       'accel_axis': accel_axis})
 
     cmd_CALIBRATE_help = ("Automatically determine resonance-probe settings and"
                           " save them to the [resonance_probe] config section")
@@ -917,6 +938,9 @@ class ResonanceProbeCalibrate:
         m = self._calibrate_contact(gcmd, chip, axis, accel_axis, freq,
                                     known_drop=known_drop)
         accel_per_hz = m['accel_per_hz']
+        # The contact phase may have moved the detection axis to match the
+        # armed floors (see _calibrate_contact) - save what it decided.
+        accel_axis = m.get('accel_axis', accel_axis)
         sensitivity, halt = m['sensitivity'], m['halt']
         # One machine-parseable line summarizing this run (for characterization)
         gcmd.respond_info(
