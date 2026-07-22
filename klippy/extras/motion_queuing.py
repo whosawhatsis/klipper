@@ -262,7 +262,14 @@ class PrinterMotionQueuing:
             self.do_kick_flush_timer = False
             self.reactor.update_timer(self.flush_timer, self.reactor.NOW)
     # "Drip" timing (for homing and probing moves)
-    def drip_update_time(self, start_time, end_time, drip_completion):
+    def drip_update_time(self, start_time, end_time, drip_completion,
+                         drip_time=None):
+        # drip_time overrides the default MCU look-ahead depth for this move.  A
+        # larger value buffers the MCU further ahead so a busy host (e.g. one also
+        # running per-batch analysis) cannot starve the step pipeline mid-move
+        # ("Timer too close") - at the cost of proportionally more over-travel
+        # after the halt.  None keeps the default shallow (prompt-halt) look-ahead.
+        drip_time = drip_time if drip_time else DRIP_TIME
         self.drip_start_times.append(start_time)
         self._await_flush_time(start_time)
         # Disable background flushing from timer
@@ -276,7 +283,7 @@ class PrinterMotionQueuing:
                 break
             curtime = self.reactor.monotonic()
             est_print_time = self.mcu.estimated_print_time(curtime)
-            wait_time = flush_time - est_print_time - DRIP_TIME
+            wait_time = flush_time - est_print_time - drip_time
             if wait_time > 0. and self.can_pause:
                 # Pause before sending more steps
                 drip_completion.wait(curtime + wait_time)

@@ -2306,6 +2306,115 @@ z_offset:
 #   See the "probe" section for more information on the parameters above.
 ```
 
+### [resonance_probe]
+
+Nozzle-contact probe that detects contact from the drop in toolhead resonance
+amplitude measured by an accelerometer - no dedicated probe hardware and no
+micro-controller changes are required. One may define this section (instead of
+a probe section) to enable this probe. See the [Resonance Probe](Resonance_Probe.md)
+guide and the [command reference](G-Codes.md#resonance_probe). The settings
+below are normally produced by `RESONANCE_PROBE_CALIBRATE` rather than entered
+by hand.
+
+```
+[resonance_probe]
+accel_chip:
+#   The accelerometer chip to use (for example "adxl345"). This parameter must
+#   be provided.
+#vibrate_axis: x
+#   Printer axis to vibrate: x, y, z, or a "dx,dy,dz" vector. The default is x.
+#   Vibrating along z is refused unless allow_z_vibration is set.
+accel_axis: x
+#   Accelerometer output axis (x, y, or z) that responds most strongly to the
+#   excitation. This parameter must be provided (normally set by calibration).
+excitation_frequency:
+#   Resonance frequency to excite, in Hz. This parameter must be provided.
+#accel_per_hz: 10
+#   Excitation strength. The peak lateral displacement is approximately
+#   accel_per_hz / (4 * pi^2 * excitation_frequency) mm and must exceed about
+#   one microstep.
+#probe_mode: stepwise
+#   Probing method: "stepwise" or "hostdriven". See the guide.
+#sensitivity: 0.3
+#   Fractional amplitude drop that indicates contact (fine detection).
+#halt_sensitivity: 0.15
+#   Loose fractional drop used only to halt the descent in hostdriven mode.
+#descend_speed:
+#   Vibrating descent speed, in mm/s. Unset (the default) uses the standard
+#   probe "speed" parameter. Keep at or below ~1 mm/s.
+#warmup: 0.3
+#   Seconds of excitation before detection is enabled (lets it reach steady
+#   state).
+#retune_range: 0
+#   If > 0, scan the driven response +/- this many Hz around excitation_frequency
+#   at the start of each probe session and adopt the measured peak (tracks
+#   environmental drift). 0 disables it. With a freq_mesh, each mesh cell is
+#   re-tuned lazily at the first probe point that uses it.
+#retune_hz_per_sec: 1.0
+#   Retained for compatibility (the re-tune now uses a driven-response scan).
+#retune_step: 1.0
+#   Frequency step (Hz) of the re-tune scan; the peak is interpolated between
+#   steps.
+#retune_time: 0.4
+#   Excitation dwell (s) per step of the re-tune scan.
+#freq_mesh:
+#   Optional per-point excitation frequency (for a bed where one frequency will
+#   not detect well everywhere). A grid of frequencies whose extents come from the
+#   [bed_mesh] section; rows are Y, columns X, interpolated and clamped to the
+#   edges. Rows may be ragged (a single-value row is constant across X). Normally
+#   written by RESONANCE_PROBE_CALIBRATE_MESH. See Resonance_Probe.md.
+#freq_mesh_interp: bilinear
+#   freq_mesh interpolation: bilinear (default) or nearest.
+#probe_start_z:
+#   Optional fixed height to rapid-move to before each probe descent. Unset =
+#   probe from the current height.
+#probe_start_speed:
+#   Speed of the rapid move to probe_start_z (defaults to lift_speed).
+#allow_z_vibration: False
+#probe_distance: 0.5
+#probe_step: 0.05
+#probe_nudge_radius: 0
+#   If > 0, a repeat probe touch that exceeds samples_tolerance is retried at a
+#   point on a circle of this radius (mm) around the requested XY instead of
+#   the exact same spot, so a bad local spot (a plastic blob, a dead/low-
+#   friction patch) does not just reproduce the disagreement. Retries are
+#   spread evenly around the circle. 0 (the default) reproduces the standard
+#   [probe] retry behavior.
+#z_offset: 0
+#speed:
+#samples:
+#sample_retract_dist:
+#   The probe supports the standard [probe] parameters. This is a contact probe,
+#   so z_offset is 0 and "speed" is the descent speed.
+```
+
+### [resonance_probe_calibrate]
+
+Calibration helper for `[resonance_probe]`. Provides `RESONANCE_PROBE_CALIBRATE`,
+`RESONANCE_PROBE_CALIBRATE_MESH` (survey the bed_mesh grid and write a per-point
+`freq_mesh`, selecting each point's frequency by contact damping),
+`RESONANCE_PROBE_RANK_FREQ` (rank the resonance modes by contact damping),
+`RESONANCE_PROBE_FIND_FREQ`, `RESONANCE_PROBE_MEASURE`, and
+`RESONANCE_PROBE_CONTACT` (a one-shot nozzle-contact reference for calibrating
+another probe's z_offset, usable without configuring `[resonance_probe]`; see the
+[command reference](G-Codes.md#resonance_probe_calibrate)).
+
+```
+[resonance_probe_calibrate]
+accel_chip:
+#   Default accelerometer chip for the calibration commands. This parameter
+#   must be provided.
+#accel_per_hz: 10
+#max_accel_per_hz: 30
+#   Excitation-strength bounds used while calibrating. max_accel_per_hz is also
+#   the strong "starting" amplitude RESONANCE_PROBE_CALIBRATE uses to make its
+#   first, reliable contact before stepping the amplitude down to find the
+#   gentlest usable value; set it comfortably above what the probe needs.
+#move_speed: 50.
+#   Travel speed used when moving to a calibration point, in mm/s.
+#allow_z_vibration: False
+```
+
 ### [probe_eddy_current]
 
 Support for eddy current inductive probes. One may define this section

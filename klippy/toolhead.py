@@ -493,8 +493,18 @@ class ToolHead:
     # Like drip_move() but issues a sequence of moves as one abortable batch.
     # 'segments' is a list of (newpos, speed, accel); accel may be None to use
     # the toolhead default.  Used to run a vibrating, descending probe move
-    # that the endstop trigger can halt at any point.
-    def drip_move_sequence(self, segments, drip_completion):
+    # that the endstop trigger can halt at any point, and (with a completion
+    # that is never externally completed) to play a bounded vibrating sequence
+    # to its natural end with deep MCU look-ahead - needed at high excitation
+    # frequencies, where a plain per-segment toolhead.move() loop's python
+    # enqueue rate can fall behind real-time playback and starve the step
+    # pipeline ("Timer too close"; see resonance_probe.py's characterize_
+    # amplitude).  Returns the scheduled absolute end print_time of each
+    # successfully-added move (segments with zero move distance are skipped,
+    # same as toolhead.move()), so a caller that needs to map sample
+    # timestamps back to the segment that produced them (as characterize_
+    # amplitude does) doesn't have to poll get_last_move_time() per segment.
+    def drip_move_sequence(self, segments, drip_completion, drip_time=None):
         moves = []
         start_pos = self.commanded_pos
         for newpos, speed, accel in segments:
@@ -508,7 +518,7 @@ class ToolHead:
             moves.append(move)
             start_pos = end_pos
         if not moves:
-            return
+            return []
         kin_flush_delay = self.motion_queuing.get_kin_flush_delay()
         self.dwell(kin_flush_delay)
         self._process_lookahead()
@@ -519,6 +529,7 @@ class ToolHead:
         flushed = self.lookahead.flush()
         self._calc_print_time()
         start_time = end_time = self.print_time
+        move_end_times = []
         for move in flushed:
             self.trapq_append(
                 self.trapq, end_time,
@@ -527,11 +538,13 @@ class ToolHead:
                 move.axes_r[0], move.axes_r[1], move.axes_r[2],
                 move.start_v, move.cruise_v, move.accel)
             end_time += move.accel_t + move.cruise_t + move.decel_t
+            move_end_times.append(end_time)
         self.lookahead.reset()
         self.motion_queuing.drip_update_time(start_time, end_time,
-                                             drip_completion)
+                                             drip_completion, drip_time)
         # Move finished; cleanup any remnants on trapq
         self.motion_queuing.wipe_trapq(self.trapq)
+        return move_end_times
     # Misc commands
     def stats(self, eventtime):
         est_print_time = self.mcu.estimated_print_time(eventtime)

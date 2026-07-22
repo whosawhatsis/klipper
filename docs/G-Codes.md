@@ -1337,6 +1337,120 @@ not recommended:
 "triggered" or in an "open" state. This command is typically used to
 verify that an endstop is working correctly.
 
+### [resonance_probe]
+
+When a [resonance_probe config section](Config_Reference.md#resonance_probe) is
+enabled the probe is available through the standard probe commands
+([`PROBE`](#probe), [`PROBE_ACCURACY`](#probe_accuracy),
+[`PROBE_CALIBRATE`](#probe_calibrate), [`BED_MESH_CALIBRATE`](#bed_mesh_calibrate),
+etc.).  See [Resonance Probe](Resonance_Probe.md) for an overview.
+
+### [resonance_probe_calibrate]
+
+The following commands are available when a
+[resonance_probe_calibrate config section](Config_Reference.md#resonance_probe_calibrate)
+is enabled.  See [Resonance Probe](Resonance_Probe.md) for the full procedure.
+
+#### RESONANCE_PROBE_CALIBRATE
+`RESONANCE_PROBE_CALIBRATE [AXIS=<axis>] [POINT=<x,y,z>] [SAVE=<0|1>]
+[FREQ=<hz>] [ACCEL_AXIS=<axis>] [N_PEAKS=<n>] [PEAK_THRESHOLD=<0-1>]
+[MODE_ORDER=high|low] [CANDIDATES=<f1,f2,...>] [FREQ_START=<hz>]
+[FREQ_END=<hz>] [HZ_PER_SEC=<hz>] [CHIP=<chip_name>]`:
+Automatically determine the resonance-probe settings and save them to the
+`[resonance_probe]` section (apply with `SAVE_CONFIG`).  Surveys candidate
+resonance modes (the same mode scan `RESONANCE_PROBE_RANK_FREQ` uses) and picks
+whichever damps most cleanly ON CONTACT, not just the loudest peak in air, then
+determines the responding accelerometer axis, excitation amplitude
+(`accel_per_hz`), and the contact `sensitivity`/`halt_sensitivity` at that
+frequency.  As in `CALIBRATE_MESH`, candidates are tested highest-first by
+default (`MODE_ORDER=low` reverses this) and the primary (first-tried)
+candidate is the contact arbiter - a non-primary candidate reading clean while
+the primary stays silent is a shallow-false-halt signature and is not trusted,
+so a weak, position-sensitive mode cannot spuriously win the frequency choice.
+`FREQ=` skips the mode search and calibrates at an explicit frequency instead
+(pair with `ACCEL_AXIS=` if it differs from `AXIS`); `CANDIDATES=f1,f2,...`
+skips the sweep and ranks these explicit frequencies; `N_PEAKS`/
+`PEAK_THRESHOLD` tune the candidate scan (see `RANK_FREQ` and `CALIBRATE_MESH`
+below).  Home and **set Z=0 with the paper method** (a safety requirement - the
+calibration's hard floor at Z=-0.2 assumes true contact is ~Z=-0.1 and the bed
+is not above Z=0), then position the nozzle a short distance above the bed
+before running.  A narrower sweep (`FREQ_START`/`FREQ_END`) is faster if the
+resonance is roughly known.  Use `SAVE=0` for a dry run that reports the values
+without modifying the config.
+
+#### RESONANCE_PROBE_CALIBRATE_MESH
+`RESONANCE_PROBE_CALIBRATE_MESH [CONTACT_POINTS=all|corners] [FREQ_START=<hz>]
+[FREQ_END=<hz>] [CAND_WINDOW=<hz>] [MODE_ORDER=high|low] [TRACK_WINDOW=<hz>]
+[CANDIDATES=<f1,f2,...>] [NUDGE_RADIUS=<mm>] [NUDGE_TRIES=<n>]
+[DRIP_TIME=<s>] [VIB_SPAN=<mm>] [MESH_TRAVEL=<speed>] [CONTACT_ZMIN=<mm>]
+[SAVE=<0|1>] [AXIS=<axis>] [CHIP=<chip_name>]`:
+Survey the `[bed_mesh]` grid and save a per-point `freq_mesh` to the
+`[resonance_probe]` section (apply with `SAVE_CONFIG`), for machines whose
+resonance shifts too much across the bed for one frequency.  At each point it
+selects the excitation frequency by *contact damping*, searching the full
+input-shaper range (`FREQ_START`-`FREQ_END`, default 5-135 Hz) and testing
+candidate modes highest-first by default (`MODE_ORDER=low` reverses this).
+The **primary (first-tried) mode is the contact arbiter**: a non-primary mode's
+clean reading is accepted only when the primary mode also confirms contact, so
+a spurious reading at a shallow false halt cannot win.  `TRACK_WINDOW` (default
+5 Hz) bounds a narrow re-scan used to re-locate the primary mode's peak if it
+appears to have drifted at a new point; `CANDIDATES=f1,f2,...` skips the sweep
+and ranks these explicit frequencies instead.  A point that still gives no
+clean detection (a low-friction/dirty micro-spot) is retried at points spread
+evenly around a circle of `NUDGE_RADIUS` off it (`NUDGE_TRIES` attempts, default
+4).  Points that agree collapse to a single value, so a uniform machine yields a
+scalar and only a genuinely varying bed yields a full or ragged mesh.
+`CONTACT_POINTS=corners` tests only the center and four corners (fast); travel
+between points runs at the toolhead's max velocity (`MESH_TRAVEL` to override).
+The vibrating descent buffers the MCU `DRIP_TIME` seconds ahead (default 0.3) so
+a long or high-frequency descent cannot starve the step pipeline ("Timer too
+close"); `VIB_SPAN` is an alternative overrun guard (default 0 = off; vibrate
+only the final span above the floor - bounds the drip but adds noise).  This
+command touches the bed, so the same paper-method Z=0 safety setup as
+`RESONANCE_PROBE_CALIBRATE` applies.  `SAVE=0` surveys without writing.
+
+#### RESONANCE_PROBE_RANK_FREQ
+`RESONANCE_PROBE_RANK_FREQ [POINT=<x,y,z>] [N_PEAKS=<n>] [MODE_ORDER=high|low]
+[CANDIDATES=<f1,f2,...>] [FREQ_START=<hz>] [FREQ_END=<hz>] [CONTACT_ZMIN=<mm>]
+[AXIS=<axis>] [CHIP=<chip_name>]`: Find the candidate resonance modes at the
+current point, find contact, and rank each mode by how strongly it damps on
+contact relative to its noise (the property a probe needs), reporting the
+best.  Use it to understand a machine's modes, or to choose
+`excitation_frequency` by contact damping rather than by in-air loudness.  The
+primary (first-tried) candidate - highest mode by default, `MODE_ORDER=low` for
+lowest-first - is the contact arbiter: a non-primary candidate reading clean
+while the primary stays silent is treated as a shallow false halt, not a
+confirmed reading (see `CALIBRATE_MESH` below).  Pass explicit `CANDIDATES=` to
+rank a known set of frequencies.  Nothing is written.
+
+#### RESONANCE_PROBE_FIND_FREQ
+`RESONANCE_PROBE_FIND_FREQ [AXIS=<axis>] [POINT=<x,y,z>] [CHIP=<chip_name>]`:
+Sweep frequencies and report the dominant resonance peak for each accelerometer
+axis, with a suggested `accel_axis` and `excitation_frequency`.
+
+#### RESONANCE_PROBE_MEASURE
+`RESONANCE_PROBE_MEASURE FREQ=<hz> [AXIS=<axis>] [ACCEL_PER_HZ=<value>]
+[DURATION=<seconds>] [POINT=<x,y,z>] [CHIP=<chip_name>]`: Vibrate at a fixed
+frequency and report the steady-state response amplitude for each accelerometer
+axis.  Comparing the amplitude with and without nozzle contact helps choose
+`sensitivity`.
+
+#### RESONANCE_PROBE_CONTACT
+`RESONANCE_PROBE_CONTACT [FREQ=<hz>] [ACCEL_AXIS=<axis>] [AXIS=<axis>]
+[ACCEL_PER_HZ=<value>] [POINT=<x,y,z>] [SAMPLES=<n>] [SENSITIVITY=<value>]
+[HALT_SENSITIVITY=<value>] [ZMIN=<mm>] [DISTANCE=<mm>] [SPEED=<mm/s>]
+[WARMUP=<seconds>] [CHIP=<chip_name>]`: Vibrate the lateral axis at the
+resonance while descending, and **halt in real time** on nozzle-to-bed contact
+(the same host-driven halt the `hostdriven` probe mode uses), report that
+contact Z, and retract to the start height.  This is a one-shot nozzle-contact
+reference for calibrating a *different*, non-contact probe's `z_offset`, and
+works without configuring `[resonance_probe]` as the machine probe.  If `FREQ`
+is omitted the resonance is located automatically first.  Because it halts, it
+does not drive into the bed; `ZMIN` (default -0.2) is only a backstop for a
+detection miss.  Home and **set Z=0 with the paper method**, then position the
+nozzle about 1 mm above the bed before running.  See
+[Resonance Probe](Resonance_Probe.md).
+
 ### [resonance_tester]
 
 The following commands are available when a
