@@ -613,10 +613,24 @@ class ResonanceProbeCalibrate:
             # reportable data point for a frequency-vs-detectability survey -
             # it must not kill the whole table (see memory: RANK_FREQ died
             # outright at 230Hz during a 5-250Hz center-point survey).
+            # SWEEP amplitudes for every candidate, and judge each mode at ITS
+            # OWN best amplitude.  Ranking on a single amplitude compared modes
+            # under conditions that disadvantage some of them: the contact drop
+            # is a ratio, so a mode that is excellent at accel_per_hz 60 can
+            # read poorly when measured at 120 or 200.  Ranking from one
+            # measurement is also the same single-shot fragility that made
+            # amplitude selection flip 100/120/60 between runs, one level up -
+            # and mode choice is the more consequential of the two, since it
+            # decides which resonance is used at all.
+            #
+            # This is affordable: full calibration is a ONE-TIME setup step (a
+            # 20-minute run is acceptable), and the expensive part per candidate
+            # is the contact-find, which does not repeat across levels.
+            levels = gcmd.get_int("RANK_LEVELS", 3, minval=1, maxval=8)
             try:
                 m = helper.characterize_amplitude(
                     gcmd, x0, y0, contact_z, lift, up_margin, down_margin,
-                    cycles, 1, min_drop, target_noise)
+                    cycles, levels, min_drop, target_noise)
             except gcmd.error as e:
                 gcmd.respond_info(
                     "Mode %.1fHz: characterization failed (%s) - recording as"
@@ -625,16 +639,25 @@ class ResonanceProbeCalibrate:
                 continue
             drop = m['max_drop']
             noise = m['rel_noise']
-            snr = drop / max(noise, 0.01)
-            ranked.append((fq, drop, noise, snr, m['axis']))
+            # Rank by the SAME live-headroom metric that selects the amplitude
+            # and derives the halt floors (0.5*drop - noise*1.3 - 3pp), rather
+            # than by drop/noise.  Using one definition of "detectable"
+            # throughout means the mode that wins is the mode that will actually
+            # have margin while descending - drop/noise could crown a mode whose
+            # absolute drop is too small to clear its own floor.  Kept on the
+            # same 0-scale sign convention: bigger is better, <=0 is unusable.
+            head = m.get('headroom')
+            if head is None:
+                head = 0.5 * drop - (noise * 1.3 + 0.03)
+            ranked.append((fq, drop, noise, head, m['axis']))
             all_axes = ", ".join(
                 "%s=%.0f%%/%.1f%%" % (a, v['drop'] * 100., v['noise'] * 100.)
                 for a, v in m['all_axes'].items())
             gcmd.respond_info(
-                "Mode %.1fHz: contact drop=%.0f%% noise=%.1f%%"
-                " detectability(drop/noise)=%.1f axis=%s (all axes"
-                " drop%%/noise%%: %s)"
-                % (fq, drop * 100., noise * 100., snr, m['axis'], all_axes))
+                "Mode %.1fHz: best aph=%.0f drop=%.0f%% noise=%.1f%%"
+                " headroom=%+.1fpp axis=%s (all axes drop%%/noise%%: %s)"
+                % (fq, m['accel_per_hz'], drop * 100., noise * 100.,
+                   head * 100., m['axis'], all_axes))
         ranked.sort(key=lambda r: -r[3])
         return ranked
 
@@ -1330,8 +1353,8 @@ class ResonanceProbeCalibrate:
                     contact_z, ranked, ambiguous = cz, trial, False
                     gcmd.respond_info(
                         "Mode select: contact at z=%.4f confirmed (best %.1f Hz"
-                        " drop=%.0f%% detectability=%.1f)"
-                        % (cz, pick[0], pick[1] * 100., pick[3]))
+                        " drop=%.0f%% headroom=%+.1fpp)"
+                        % (cz, pick[0], pick[1] * 100., pick[3] * 100.))
                     break
                 if verdict == 'none':
                     # Nothing damps on any candidate at this contact - genuine
@@ -1377,10 +1400,10 @@ class ResonanceProbeCalibrate:
                 " z=%.4f; the ranking below is a best-effort, verify before"
                 " trusting it" % contact_z)
         gcmd.respond_info(
-            "Mode select: ranking by contact detectability (best first):\n"
-            + "\n".join("  %.1f Hz: drop=%.0f%% noise=%.1f%% detectability=%.1f"
+            "Mode select: ranking by live headroom (best first):\n"
+            + "\n".join("  %.1f Hz: drop=%.0f%% noise=%.1f%% headroom=%+.1fpp"
                         " axis=%s"
-                        % (f, d*100., n*100., s, a)
+                        % (f, d*100., n*100., s*100., a)
                         for (f, d, n, s, a) in ranked))
         return ranked[0][0], ranked, ambiguous, attempts
 
@@ -1542,8 +1565,8 @@ class ResonanceProbeCalibrate:
                    if ambiguous else "")
                 + "\n".join(
                     "    %.1f Hz: drop=%.0f%% noise=%.1f%%"
-                    " detectability=%.1f axis=%s"
-                    % (f, d * 100., n * 100., s, a)
+                    " headroom=%+.1fpp axis=%s"
+                    % (f, d * 100., n * 100., s * 100., a)
                     for (f, d, n, s, a) in ranked))
         gcmd.respond_info(
             "SURVEY_MESH summary (per-candidate, across %d point(s)):"
@@ -1558,13 +1581,14 @@ class ResonanceProbeCalibrate:
                 continue
             gcmd.respond_info(
                 "  %.1f Hz: drop %.0f-%.0f%% (avg %.0f%%), noise"
-                " %.1f-%.1f%% (avg %.1f%%), detectability %.1f-%.1f"
-                " (avg %.1f) over %d/%d point(s)"
+                " %.1f-%.1f%% (avg %.1f%%), headroom %+.1f..%+.1fpp"
+                " (avg %+.1fpp) over %d/%d point(s)"
                 % (f, min(drops) * 100., max(drops) * 100.,
                    (sum(drops) / len(drops)) * 100.,
                    min(noises) * 100., max(noises) * 100.,
                    (sum(noises) / len(noises)) * 100.,
-                   min(snrs), max(snrs), sum(snrs) / len(snrs),
+                   min(snrs) * 100., max(snrs) * 100.,
+                   (sum(snrs) / len(snrs)) * 100.,
                    len(drops), len(ijs)))
         if ambiguous_points:
             gcmd.respond_info(
@@ -1810,11 +1834,17 @@ class ResonanceProbeCalibrate:
                     helper = HaltingContactProbe(
                         self.printer, chip, out_idx, axis, fq, h_aph,
                         h_amp, z_min, warmup, 0.06, 0.15, 5., 0.01, 0.05, 0.)
+                    # Sweep amplitudes per candidate and rank by live headroom,
+                    # exactly as the RANK_FREQ finder does - see its comment.
                     m = helper.characterize_amplitude(
                         gcmd, x, y, contact_z, lift, up_margin, down_margin,
-                        cycles, 1, min_drop, target_noise)
+                        cycles, gcmd.get_int("RANK_LEVELS", 3, minval=1,
+                                             maxval=8),
+                        min_drop, target_noise)
                     drop, noise = m['max_drop'], m['rel_noise']
-                    det = drop / noise if noise > 1e-9 else 0.
+                    det = m.get('headroom')
+                    if det is None:
+                        det = 0.5 * drop - (noise * 1.3 + 0.03)
                     trial.append((fq, drop, noise, det, m['axis']))
                     clean = drop >= min_drop and noise <= target_noise
                     gcmd.respond_info("    %.1f Hz: drop=%.0f%% noise=%.1f%%"
