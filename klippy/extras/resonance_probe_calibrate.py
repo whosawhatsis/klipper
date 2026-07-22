@@ -75,6 +75,9 @@ class ResonanceProbeCalibrate:
                 self.cmd_CHARACTERIZE_NOISE,
                 desc=self.cmd_CHARACTERIZE_NOISE_help)
         self.gcode.register_command(
+                "RESONANCE_PROBE_AUDIT_STATUS", self.cmd_AUDIT_STATUS,
+                desc=self.cmd_AUDIT_STATUS_help)
+        self.gcode.register_command(
                 "RESONANCE_PROBE_RANK_FREQ", self.cmd_RANK_FREQ,
                 desc=self.cmd_RANK_FREQ_help)
         self.gcode.register_command(
@@ -1406,6 +1409,67 @@ class ResonanceProbeCalibrate:
                         % (f, d*100., n*100., s*100., a)
                         for (f, d, n, s, a) in ranked))
         return ranked[0][0], ranked, ambiguous, attempts
+
+    # Walk every printer object's status and report anything json.dumps would
+    # refuse.  This exists because a single numpy value reaching Klipper's
+    # webhook layer is FATAL - json.dumps raises, Klipper calls it an internal
+    # error and SHUTS THE MCU DOWN - and the traceback names no module, so the
+    # offender is invisible.  This has cost two debugging sessions.
+    #
+    # Run it right after whatever you suspect (a probe, a calibration): the
+    # leak is state-dependent, so a clean idle audit proves nothing on its own.
+    # It reports the exact object + key path + type, which is what the crash
+    # traceback cannot tell you.  Read-only: no motion, safe at any time.
+    cmd_AUDIT_STATUS_help = ("Report any printer status value that would crash"
+                             " Klipper's JSON/webhook layer (e.g. numpy)")
+    def cmd_AUDIT_STATUS(self, gcmd):
+        import json
+        reactor = self.printer.get_reactor()
+        eventtime = reactor.monotonic()
+        bad = []
+
+        def walk(path, v, depth=0):
+            if depth > 6:
+                return
+            tname = type(v).__name__
+            if v is None or isinstance(v, (bool, int, float, str)):
+                # Exact builtins are fine; a SUBCLASS (numpy.bool_ is not a
+                # bool, numpy.float64 IS a float subclass) can still break the
+                # encoder, so verify by actually encoding it.
+                if type(v) in (bool, int, float, str, type(None)):
+                    return
+            if isinstance(v, dict):
+                for k, sub in v.items():
+                    walk("%s.%s" % (path, k), sub, depth + 1)
+                return
+            if isinstance(v, (list, tuple)):
+                for i, sub in enumerate(v):
+                    walk("%s[%d]" % (path, i), sub, depth + 1)
+                return
+            try:
+                json.dumps(v)
+            except TypeError:
+                bad.append((path, tname))
+
+        for name, obj in self.printer.lookup_objects():
+            get_status = getattr(obj, 'get_status', None)
+            if get_status is None:
+                continue
+            try:
+                st = get_status(eventtime)
+            except Exception as e:
+                gcmd.respond_info("audit: %s.get_status() raised %s"
+                                  % (name, e))
+                continue
+            walk(name, st)
+        if not bad:
+            gcmd.respond_info(
+                "audit: all printer object status values are JSON-clean")
+            return
+        gcmd.respond_info(
+            "audit: %d NON-SERIALIZABLE value(s) - each one of these will shut"
+            " the MCU down when a client queries it:\n%s"
+            % (len(bad), "\n".join("  %s -> %s" % (p, t) for p, t in bad)))
 
     cmd_CHARACTERIZE_NOISE_help = (
         "Descend in AIR (no contact, no halt) and measure each accelerometer"

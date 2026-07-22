@@ -2183,7 +2183,9 @@ class ResonanceProbeSession:
         else:
             self.results.append(rp._stepwise_probe(gcmd))
     def pull_probed_results(self):
-        res = self.results
+        # Sanitized: these results are consumed by PROBE_ACCURACY, bed_mesh and
+        # probe status, all of which end up in JSON - see _plain().
+        res = _plain(self.results)
         self.results = []
         return res
     def end_probe_session(self):
