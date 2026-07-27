@@ -106,17 +106,33 @@ def _halt_floor(drop, noise):
     return lo + HALT_SENSITIVITY_BIAS * (hi - lo)
 
 
-def _moving_stats(amps, zs, contact_z, up_margin):
+# Z span of the live detector's "current" window (see _handle_batch, where this
+# caps win_z).  Shared so the calibration sweep measures contact over the SAME
+# span the live halt does - a mode judged over a wider span is judged on damping
+# the live detector will never get to see.
+LIVE_WIN_Z = 0.022
+
+
+def _moving_stats(amps, zs, contact_z, up_margin, onset_z=LIVE_WIN_Z):
     """Contact drop and noise measured in the MOVING regime.
 
     The amplitude sweep's down-ramp spans up_margin above contact to
     down_margin below it, so a statistic over the whole ramp is dominated by
     air: with the defaults (0.10/0.04) the median window sits ~30um ABOVE the
-    surface.  Split by height instead - windows at or below contact_z are
-    moving-in-contact, windows in the upper half of the air side are
-    moving-in-air - and take BOTH the drop and the noise from that split, so
-    the two stay in the same regime.  The band between the two populations is
-    left unassigned so the transition pollutes neither.
+    surface.  Split by height instead - windows in the upper half of the air
+    side are moving-in-air - and take BOTH the drop and the noise from that
+    split, so the two stay in the same regime.
+
+    The contact side is restricted to an ONSET band, the first onset_z below
+    contact, because that is all the live detector ever sees: it fires on a
+    gradient measured over win_z (<= LIVE_WIN_Z) at the leading edge of
+    contact, not on fully-pressed damping.  Measuring everything below
+    contact_z instead - up to down_margin (40um) of press - credits a mode for
+    damping that develops only as the nozzle pushes in.  That is not
+    hypothetical: at 148Hz the whole-below-contact figure rated z at 57% while
+    the live descent read 1-7% on z and never triggered, x carrying every halt.
+    The air reference (0.5*up_margin = 0.05mm) already matches the live
+    detector's ref_z = max(confirm_z, 2*win_z) = 0.05mm.
 
     Returns (drop, noise); (0., 1.) - i.e. no usable signal - when either
     population is too small to summarise.
@@ -127,7 +143,7 @@ def _moving_stats(amps, zs, contact_z, up_margin):
     if amps.shape != zs.shape:
         raise ValueError("amps and zs must be parallel")
     air = amps[zs >= contact_z + 0.5 * up_margin]
-    con = amps[zs <= contact_z]
+    con = amps[(zs <= contact_z) & (zs >= contact_z - onset_z)]
     if len(air) < 3 or len(con) < 2:
         return 0., 1.
     base = float(np.median(air))
@@ -993,7 +1009,7 @@ class _HostResonanceEndstop:
                 # sharp in Z is what this detector needs - a false halt is
                 # cheaply rejected by the verify-on-halt retry, whereas a diluted
                 # crater is not recoverable at all.
-                MAX_WIN_Z = 0.022
+                MAX_WIN_Z = LIVE_WIN_Z
                 self._win_n = max(8, int(2. / self._freq * sps),
                                   min(self._win_n, int(MAX_WIN_Z * sps / spd0)))
                 # Step a fixed Z distance; confirm a drop over detect_confirm_z.
@@ -2069,7 +2085,16 @@ class HaltingContactProbe:
         # never started while touching the bed.  The contact dwell is kept short
         # (bed/nozzle wear) since the moving ramp is the probe-relevant metric.
         dwell_t = gcmd.get_float("CONTACT_DWELL", 0.35, above=0.1)
-        ramp_speed = gcmd.get_float("CONTACT_RAMP_SPEED", 1.0, above=0.,
+        # Ramp at the speed the probe actually descends at.  Two reasons, both
+        # discovered the hard way.  (1) Resolution: one analysis window spans
+        # detect_cycles/f seconds, which at 1.0mm/s is ~0.054mm of travel -
+        # more than twice the LIVE_WIN_Z onset band, so the onset drop cannot
+        # be resolved at all and every mode reads as no-signal.  (2) Physics:
+        # ring-down dilution scales with descent speed, so a ramp faster than
+        # the real descent measures damping under conditions the probe never
+        # meets.  0.3mm/s is this machine's ring-down ceiling; the extra ~2.6s
+        # per level is nothing against a one-time calibration.
+        ramp_speed = gcmd.get_float("CONTACT_RAMP_SPEED", 0.3, above=0.,
                                     maxval=10.)
         # Same MCU step-buffer overrun protection as the halting descent (see
         # HaltingContactProbe.run) - a bounded oscillation at high excitation
@@ -2161,6 +2186,19 @@ class HaltingContactProbe:
         times = data[:, 0]
         sps = _sample_rate(times)
         win_n = max(8, int(self.detect_cycles / f * sps))
+        # The onset drop can only be measured if a window is SHORTER in Z than
+        # the onset band; otherwise every window straddles the surface, the
+        # onset population comes back empty and every mode reads as no-signal -
+        # a silent and very confusing failure.  Say so instead.
+        win_z_span = (win_n / sps) * ramp_speed
+        if win_z_span > LIVE_WIN_Z:
+            gcmd.respond_info(
+                "Calibrate: WARNING - at %.2f mm/s one analysis window spans"
+                " %.3fmm of Z, wider than the %.3fmm onset band, so the moving"
+                " numbers below are smeared across the surface; lower"
+                " CONTACT_RAMP_SPEED to about %.2f mm/s"
+                % (ramp_speed, win_z_span, LIVE_WIN_Z,
+                   LIVE_WIN_Z * sps / win_n))
         # Map each sample time to the ACTUAL segment (via its real scheduled end
         # time) using the real per-segment times (an averaged seg_dt would drift
         # over the later levels and mislabel windows).

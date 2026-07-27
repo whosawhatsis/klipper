@@ -3,7 +3,7 @@
 # summarised whole.  Run from klippy/:
 #     python -m extras.test_resonance_moving_stats
 import numpy as np
-from .resonance_probe import _moving_stats
+from .resonance_probe import _moving_stats, LIVE_WIN_Z
 
 CONTACT_Z, UP = 0.0, 0.10
 # A ramp with the real defaults: 0.10mm of air above contact, 0.04mm below.
@@ -52,6 +52,36 @@ def test_transition_band_is_excluded():
     amps[(ZS > CONTACT_Z) & (ZS < CONTACT_Z + 0.5 * UP)] = 600.
     drop, _ = _moving_stats(amps, ZS, CONTACT_Z, UP)
     assert abs(drop - 0.70) < 1e-6, drop
+
+
+def test_depth_dependent_damping_is_discounted():
+    # The 148Hz/z case: damping that grows with press depth rather than
+    # appearing at first contact.  The live detector only ever sees the first
+    # LIVE_WIN_Z, so the metric must report the shallow part, not the deep part.
+    depth = np.clip(CONTACT_Z - ZS, 0., None)
+    amps = 1000. * (1. - 20. * depth)        # -80% by 40um of press
+    drop, _ = _moving_stats(amps, ZS, CONTACT_Z, UP)
+    whole_below = 1. - float(np.median(amps[ZS <= CONTACT_Z])) / 1000.
+    # Both see damping, but the onset band must rate it substantially lower -
+    # that gap is the entire point of the change.
+    assert drop < whole_below - 0.15, (drop, whole_below)
+    assert 0.1 < drop < 0.3, drop
+
+
+def test_damping_at_the_surface_still_reads_high():
+    # The counterpart: damping present from first contact must survive the
+    # narrower band, or the change would just suppress everything.
+    amps = np.where(ZS > CONTACT_Z, 1000., 300.)
+    drop, _ = _moving_stats(amps, ZS, CONTACT_Z, UP)
+    assert abs(drop - 0.70) < 1e-6, drop
+
+
+def test_onset_band_is_respected_exactly():
+    # A window sitting just outside the band must not count toward contact.
+    zs = np.array([0.10, 0.09, 0.08, -0.001, -(LIVE_WIN_Z + 0.005)])
+    amps = np.array([1000., 1000., 1000., 1000., 10.])
+    drop, _ = _moving_stats(amps, zs, CONTACT_Z, UP)
+    assert drop == 0., drop     # only the in-band window counts, and it is air
 
 
 if __name__ == '__main__':
