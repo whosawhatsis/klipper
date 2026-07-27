@@ -106,6 +106,37 @@ def _halt_floor(drop, noise):
     return lo + HALT_SENSITIVITY_BIAS * (hi - lo)
 
 
+def _moving_stats(amps, zs, contact_z, up_margin):
+    """Contact drop and noise measured in the MOVING regime.
+
+    The amplitude sweep's down-ramp spans up_margin above contact to
+    down_margin below it, so a statistic over the whole ramp is dominated by
+    air: with the defaults (0.10/0.04) the median window sits ~30um ABOVE the
+    surface.  Split by height instead - windows at or below contact_z are
+    moving-in-contact, windows in the upper half of the air side are
+    moving-in-air - and take BOTH the drop and the noise from that split, so
+    the two stay in the same regime.  The band between the two populations is
+    left unassigned so the transition pollutes neither.
+
+    Returns (drop, noise); (0., 1.) - i.e. no usable signal - when either
+    population is too small to summarise.
+    """
+    import numpy as np
+    amps = np.asarray(amps, dtype=np.float64)
+    zs = np.asarray(zs, dtype=np.float64)
+    if amps.shape != zs.shape:
+        raise ValueError("amps and zs must be parallel")
+    air = amps[zs >= contact_z + 0.5 * up_margin]
+    con = amps[zs <= contact_z]
+    if len(air) < 3 or len(con) < 2:
+        return 0., 1.
+    base = float(np.median(air))
+    if base <= 0.:
+        return 0., 1.
+    return (max(0., 1. - float(np.median(con)) / base),
+            float(np.std(air)) / base)
+
+
 def _plain(obj):
     item = getattr(obj, 'item', None)          # numpy scalar -> Python scalar
     if item is not None and getattr(obj, 'ndim', None) == 0:
@@ -2145,6 +2176,15 @@ class HaltingContactProbe:
         wamp_axes, wk = _window_amps_tagged(times, cols, f, win_n,
                                             max(1, win_n // 2), seg_end_t)
         wtag = seg_tag_arr[wk]
+        # Z of each window, from the segment it fell in.  Needed to split the
+        # down-ramp by height: the ramp spans up_margin ABOVE contact to
+        # down_margin BELOW it, and with the defaults (0.10 / 0.04) only 29% of
+        # it is in contact, so a median over the whole ramp lands ~30um ABOVE
+        # the surface - in air.  The old moving_drop did exactly that, making it
+        # a measure of the gentle height-dependent air rise rather than of
+        # contact damping, which is why it read 0-6% almost everywhere.
+        seg_z = np.asarray([s[0][2] for s in segs], dtype=np.float64)
+        wz = seg_z[wk]
         results = []
         for (s_start, s_end, aph) in level_ranges:
             m = (wk >= s_start) & (wk < s_end)
@@ -2160,9 +2200,24 @@ class HaltingContactProbe:
                 baseline = float(np.median(air))
                 drop = max(0., 1. - float(np.median(contact)) / max(baseline, 1e-9))
                 noise = float(np.std(air)) / max(baseline, 1e-9)
-                mdrop = (max(0., 1. - float(np.median(downw)) / baseline)
-                         if len(downw) else 0.)
-                per_axis.append((baseline, drop, noise, mdrop))
+                # MOVING regime, measured against its own reference.  The live
+                # halt happens while descending, where ring-down dilutes the
+                # drop, so the stationary dwell numbers above do not predict it:
+                # measured on hardware, the axis with a 68% dwell drop and +31pp
+                # of dwell headroom reached only 1-6% live and never triggered,
+                # while the axis ranked WORST on dwell carried every halt.
+                #
+                # Split the ramp by height and compare like with like: windows
+                # below contact_z are moving-in-contact, windows in the upper
+                # half of the air side are moving-in-air.  The gap between them
+                # is left unassigned so the transition itself pollutes neither
+                # population.  Deriving the noise from the moving-air windows
+                # (not the stationary dwell) keeps drop and noise in the SAME
+                # regime - pairing a moving drop with dwell noise would just be
+                # a differently-mismatched metric.
+                mdrop, mnoise = _moving_stats(
+                    downw, wz[m & (wtag == 'down')], contact_z, up_margin)
+                per_axis.append((baseline, drop, noise, mdrop, mnoise))
             valid_axes = [a for a, r in enumerate(per_axis) if r is not None]
             if not valid_axes:
                 results.append((aph, None, None, None, None, per_axis))
@@ -2186,17 +2241,28 @@ class HaltingContactProbe:
             pool = clean_axes or valid_axes
             best_axis = max(pool, key=lambda a: _halt_headroom(per_axis[a][1],
                                                                per_axis[a][2]))
-            baseline, drop, noise, mdrop = per_axis[best_axis]
+            baseline, drop, noise, mdrop, mnoise = per_axis[best_axis]
             results.append((aph, baseline, drop, noise, best_axis, per_axis))
+            # Report the MOVING headroom next to the dwell one.  The live halt
+            # is decided by the moving figures, so a mode/amplitude/axis with
+            # big dwell headroom and negative moving headroom is a config that
+            # looks excellent and cannot detect - exactly the 148Hz/z case.
+            m_head = _halt_headroom(mdrop, mnoise)
             gcmd.respond_info(
                 "Calibrate sweep: accel_per_hz=%.0f baseline=%.0f dwell_drop=%.0f%%"
-                " noise=%.1f%% moving_drop=%.0f%% axis=%s (all axes:"
-                " %s)"
+                " noise=%.1f%% moving=%.0f%%/%.1f%% (head %+.1fpp) axis=%s"
+                " (all axes: %s)"
                 % (aph, baseline, drop * 100., noise * 100., mdrop * 100.,
+                   mnoise * 100., m_head * 100.,
                    axis_names[best_axis],
                    ", ".join(
-                       "%s=%.0f%%/%.1f%%" % (axis_names[a], r[1] * 100.,
-                                             r[2] * 100.) if r is not None
+                       # dwell drop/noise then moving drop/noise, per axis -
+                       # the pair that decides whether an axis will actually
+                       # halt is the MOVING one, so both must be visible when
+                       # comparing candidates.
+                       "%s=%.0f/%.1f mov %.0f/%.1f" % (
+                           axis_names[a], r[1] * 100., r[2] * 100.,
+                           r[3] * 100., r[4] * 100.) if r is not None
                        else "%s=n/a" % axis_names[a]
                        for a, r in enumerate(per_axis))))
         # Pick the amplitude that leaves the LIVE detector the most HEADROOM.
