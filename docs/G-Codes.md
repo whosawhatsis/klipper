@@ -1387,8 +1387,8 @@ without modifying the config.
 Survey the `[bed_mesh]` grid and save a per-point `freq_mesh` to the
 `[resonance_probe]` section (apply with `SAVE_CONFIG`), for machines whose
 resonance shifts too much across the bed for one frequency.  At each point it
-selects the excitation frequency by *contact damping*, searching the full
-input-shaper range (`FREQ_START`-`FREQ_END`, default 5-135 Hz) and testing
+selects the excitation frequency by *contact damping*, searching a wide
+frequency band (`FREQ_START`-`FREQ_END`, default 5-200 Hz) and testing
 candidate modes highest-first by default (`MODE_ORDER=low` reverses this).
 The **primary (first-tried) mode is the contact arbiter**: a non-primary mode's
 clean reading is accepted only when the primary mode also confirms contact, so

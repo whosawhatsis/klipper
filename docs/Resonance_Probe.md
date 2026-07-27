@@ -257,7 +257,9 @@ Useful parameters:
 * `CANDIDATES=f1,f2,...` - skip the mode scan and rank these explicit
   frequencies instead.
 * `FREQ_START=`, `FREQ_END=` - frequency band searched for candidates (default
-  5-135 Hz).
+  5-200 Hz).  Keep `FREQ_END` at least 15 Hz above the highest frequency you
+  actually care about: a quiet mode within 15 Hz of the scan edge cannot be
+  confirmed as a real peak (its neighborhood is only half-swept) and is skipped.
 * `SAVE=0` - report the suggested values without modifying the config.
 * `CONTACT_ZMIN=` - hard descent floor (default -0.2; see the paper-method note
   above).  `CONTACT_SPEED=` - first-contact descent speed.  `CONTACT_WARMUP=` -

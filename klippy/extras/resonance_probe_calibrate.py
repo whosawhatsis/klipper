@@ -2018,14 +2018,24 @@ class ResonanceProbeCalibrate:
         # the bed center + 4 corners (fast - if they agree the bed is uniform).
         which = gcmd.get("CONTACT_POINTS", "all").lower()
         # Driven-scan band for candidate-mode identification (surfaces the higher
-        # modes a swept PSD misses).  Defaults span Klipper's own input-shaper
-        # sweep range (5-135 Hz for X/Y - see shaper_calibrate.py/Config_Reference
-        # .md) rather than a machine-specific band: real structural resonances can
-        # legitimately fall anywhere in that range, so outlier/harmonic peaks are
-        # rejected by contact-damping + low-first selection below, not by a
-        # frequency cutoff.
+        # modes a swept PSD misses).  Real structural resonances can legitimately
+        # fall anywhere in the band, so outlier/harmonic peaks are rejected by
+        # contact-damping + low-first selection below, not by a frequency cutoff.
+        #
+        # FREQ_END is deliberately well ABOVE the band of interest, not at its
+        # edge.  A peak is only admitted on prominence if its full
+        # +-PROMINENCE_WINDOW_HZ neighborhood was swept (see _window_confirmed),
+        # so the usable ceiling is FREQ_END - 15 Hz, and a quiet-but-excellent
+        # mode sitting in that dead band is silently never characterized.  The
+        # old 135 Hz default (Klipper's input-shaper range, shaper_calibrate.py)
+        # put the ceiling at 120 Hz and cost exactly that: this machine's ~131 Hz
+        # mode - 90%+ contact drop on y, ~10x the best mode below 100 Hz - was
+        # admitted only on the runs where its peak happened to clear the
+        # power threshold outright, and was rejected as "too close to the tested
+        # range's edge" at 132.5 Hz on the runs where it did not.  Scanning to
+        # 200 Hz costs ~30 s of sweep and makes that mode reachable every run.
         f_lo = gcmd.get_float("FREQ_START", 5., above=0.)
-        f_hi = gcmd.get_float("FREQ_END", 135., above=f_lo + 1.)
+        f_hi = gcmd.get_float("FREQ_END", 200., above=f_lo + 1.)
         cand_step = gcmd.get_float("CAND_STEP", 1.0, above=0.)
         cand_dur = gcmd.get_float("CAND_DUR", 0.5, above=0.1)
         # Radius (Hz) of the discrete driven-refine window around each swept-PSD
