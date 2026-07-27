@@ -251,7 +251,30 @@ def detector_margin(drop, noise, floor, nsigma):
     return drop / thr
 
 
-def robust_axis_margin(per_axis, floor, nsigma):
+def axis_margins(per_axis, floor, nsigma):
+    """Per-axis detector margins, sorted strongest first.
+
+    Missing axes score 0 rather than being dropped, so the profile always has
+    one entry per axis and a candidate with only one readable axis cannot
+    masquerade as a two-axis one.
+
+    The whole profile is worth reporting, not just one summary number: the
+    strongest axis says how well the probe can detect at its best, and the
+    third says what is left when bed position shifts the signal off the first
+    two.  A candidate that leads on several of those ranks at once is better
+    corroborated than one that wins a single ranking.
+    """
+    vals = []
+    for entry in per_axis:
+        if entry is None:
+            vals.append(0.)
+        else:
+            drop, noise = entry
+            vals.append(detector_margin(drop, noise, floor, nsigma))
+    return sorted(vals, reverse=True)
+
+
+def robust_axis_margin(per_axis, floor, nsigma, rank=2):
     """Score a candidate by its SECOND-best axis.
 
     per_axis: iterable of (drop, noise), or None for an axis with no reading.
@@ -279,18 +302,19 @@ def robust_axis_margin(per_axis, floor, nsigma):
     axes and one dead one - and a dead third axis costs nothing when the other
     two work everywhere.
 
-    Returns 0. when fewer than two axes are readable: a single reading is not
-    evidence of redundancy.
+    `rank` selects which position in the sorted profile to score: 1 = best
+    axis (raw detectability), 2 = second best (the default, redundancy), 3 =
+    third.  Exposed because the choice is a judgement call, not a fact: a user
+    may legitimately prefer a candidate that leads on rank 1 AND rank 3 over
+    one that only leads on rank 2.
+
+    Returns 0. when fewer than `rank` axes are readable: a single reading is
+    not evidence of redundancy.
     """
-    vals = []
-    for entry in per_axis:
-        if entry is None:
-            continue
-        drop, noise = entry
-        vals.append(detector_margin(drop, noise, floor, nsigma))
-    if len(vals) < 2:
+    vals = axis_margins(per_axis, floor, nsigma)
+    if len(vals) < rank:
         return 0.
-    return sorted(vals, reverse=True)[1]
+    return vals[rank - 1]
 
 
 class FindThenRefine:

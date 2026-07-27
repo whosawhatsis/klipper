@@ -693,7 +693,15 @@ class ResonanceProbeCalibrate:
                         0.10, 8.)
                 else:
                     head = 0.
-            ranked.append((fq, drop, noise, head, m['axis']))
+            # Carry the full per-axis margin profile (strongest first) so the
+            # report can show the 1st/2nd/3rd-axis rankings, not just the one
+            # the automatic pick uses.
+            profile = []
+            if m.get('all_axes'):
+                profile = analog_contact.axis_margins(
+                    [(v['drop'], v['noise'])
+                     for v in m['all_axes'].values()], 0.10, 8.)
+            ranked.append((fq, drop, noise, head, m['axis'], profile))
             all_axes = ", ".join(
                 "%s=%.0f%%/%.1f%%" % (a, v['drop'] * 100., v['noise'] * 100.)
                 for a, v in m['all_axes'].items())
@@ -1467,13 +1475,52 @@ class ResonanceProbeCalibrate:
                 "Mode select: WARNING - no candidate ever read fully clean at"
                 " z=%.4f; the ranking below is a best-effort, verify before"
                 " trusting it" % contact_z)
-        gcmd.respond_info(
-            "Mode select: ranking by live headroom (best first):\n"
-            + "\n".join("  %.1f Hz: drop=%.0f%% noise=%.1f%% margin=%.1fx"
-                        " axis=%s"
-                        % (f, d*100., n*100., s*100., a)
-                        for (f, d, n, s, a) in ranked))
+        self._report_axis_rankings(gcmd, ranked)
         return ranked[0][0], ranked, ambiguous, attempts
+
+    # Present the candidates by BEST / 2nd / 3rd axis margin rather than a
+    # single verdict.  Which trade to make is a judgement call the numbers
+    # cannot settle: the best 1st-axis mode detects hardest where it works, the
+    # best 3rd-axis mode degrades most gracefully as bed position moves the
+    # signal between axes, and the 2nd-axis ranking (what the automatic pick
+    # uses) balances them.  A candidate that tops SEVERAL of these rankings is
+    # corroborated in a way that winning one is not - so say when that happens
+    # instead of hiding it behind the automatic choice.
+    def _report_axis_rankings(self, gcmd, ranked):
+        rows = [r for r in ranked if len(r) > 5 and r[5]]
+        gcmd.respond_info(
+            "Mode select: ranking by 2nd-axis margin (best first):\n"
+            + "\n".join("  %.1f Hz: drop=%.0f%% noise=%.1f%% margin=%.1fx"
+                        " axis=%s" % (f, d * 100., n * 100., s, a)
+                        for (f, d, n, s, a) in [r[:5] for r in ranked]))
+        if len(rows) < 2:
+            return
+        lines, winners = [], []
+        for idx, label in ((0, "1st"), (1, "2nd"), (2, "3rd")):
+            order = sorted(rows, key=lambda r: -r[5][idx])
+            winners.append(order[0][0])
+            lines.append("  best %s-axis: %.1f Hz (%.1fx)   runner-up"
+                         " %.1f Hz (%.1fx)"
+                         % (label, order[0][0], order[0][5][idx],
+                            order[1][0], order[1][5][idx]))
+        gcmd.respond_info(
+            "Mode select: per-axis-rank leaders (a mode topping more than one"
+            " is the safer bet):\n" + "\n".join(lines)
+            + "\n  axis margins per mode (strongest first):\n"
+            + "\n".join("    %.1f Hz: %s"
+                        % (r[0], "  ".join("%.1fx" % v for v in r[5]))
+                        for r in ranked if len(r) > 5 and r[5]))
+        if len(set(winners)) == 1:
+            gcmd.respond_info(
+                "Mode select: %.1f Hz leads ALL THREE axis rankings"
+                % (winners[0],))
+        elif len(set(winners)) == 2:
+            common = [w for w in set(winners) if winners.count(w) > 1][0]
+            gcmd.respond_info(
+                "Mode select: %.1f Hz leads two of the three axis rankings;"
+                " %s also leads one - consider it if you want that trade"
+                % (common, ", ".join("%.1f Hz" % w for w in set(winners)
+                                     if w != common)))
 
     # Walk every printer object's status and report anything json.dumps would
     # refuse.  This exists because a single numpy value reaching Klipper's
@@ -1707,7 +1754,7 @@ class ResonanceProbeCalibrate:
                 table[(x, y)] = None
                 ambiguous_points.append((x, y))
                 continue
-            table[(x, y)] = {f: (d, n, s, a) for (f, d, n, s, a) in ranked}
+            table[(x, y)] = {r[0]: tuple(r[1:5]) for r in ranked}
             if ambiguous:
                 ambiguous_points.append((x, y))
             gcmd.respond_info(
@@ -1718,8 +1765,8 @@ class ResonanceProbeCalibrate:
                 + "\n".join(
                     "    %.1f Hz: drop=%.0f%% noise=%.1f%%"
                     " margin=%.1fx axis=%s"
-                    % (f, d * 100., n * 100., s * 100., a)
-                    for (f, d, n, s, a) in ranked))
+                    % (f, d * 100., n * 100., s, a)
+                    for (f, d, n, s, a) in [r[:5] for r in ranked]))
         gcmd.respond_info(
             "SURVEY_MESH summary (per-candidate, across %d point(s)):"
             % len(ijs))
