@@ -1659,20 +1659,54 @@ class HaltingContactProbe:
         # Refine: walk the DOWN ramp from high Z to low Z and find where the
         # amplitude first crosses the air/contact midpoint (linear-interpolated).
         refined = None
+        step_snr = 0.
         dmask = wtag == 'down'
-        if dmask.sum() >= 3 and air_amp > contact_amp:
+        if dmask.sum() >= 3:
             dz = wz[dmask]
             da = wamp[dmask]
             order = np.argsort(-dz)          # descending Z (matches the ramp)
             dz = dz[order]
             da = da[order]
-            mid = 0.5 * (air_amp + contact_amp)
-            for j in range(1, len(da)):
-                if da[j - 1] >= mid >= da[j]:
-                    frac = (da[j - 1] - mid) / max(da[j - 1] - da[j], 1e-9)
-                    refined = float(dz[j - 1] + (dz[j] - dz[j - 1]) * frac)
-                    break
-        return air_amp, contact_amp, refined
+            # DERIVATIVE check, same principle as the live halt test: contact is
+            # a STEP, and a step is far better separated from air than a ratio
+            # of medians is.  The ramp here is slow enough to resolve it - at
+            # VERIFY_RAMP_SPEED 0.5mm/s a window spans ~0.027mm against a
+            # ~0.030mm event, where the calibration sweep at 1.0mm/s cannot.
+            #
+            # This matters because verify is the last line of defence: it is
+            # what rejected a false halt 660um above the bed.  A ratio of
+            # medians over a short ramp can read a real touch as marginal
+            # (that is exactly why VERIFY_DROP had to drop from 15% to 5% on
+            # this machine); a step test does not have that dilution problem.
+            steps = (da[1:] - da[:-1]) / np.maximum(da[:-1], 1e-9)
+            if len(steps) >= 3:
+                # Noise from the shallowest half of the ramp (still air); the
+                # contact step is the most negative anywhere along it.
+                air_steps = steps[:max(2, len(steps) // 2)]
+                sd = float(np.std(air_steps))
+                worst = float(np.min(steps))
+                if sd > 1e-6 and worst < 0.:
+                    step_snr = abs(worst) / sd
+                # The steepest step IS the contact edge, and it localises the
+                # transition better than the air/contact midpoint crossing when
+                # the two levels are close.  Take the midpoint of the window
+                # pair that straddles it.
+                j = int(np.argmin(steps))
+                if worst < 0.:
+                    refined = float(0.5 * (dz[j] + dz[j + 1]))
+            if air_amp > contact_amp:
+                mid = 0.5 * (air_amp + contact_amp)
+                for j in range(1, len(da)):
+                    if da[j - 1] >= mid >= da[j]:
+                        frac = (da[j - 1] - mid) / max(da[j - 1] - da[j], 1e-9)
+                        # Prefer the ratio crossing when it exists: it is the
+                        # long-standing, well-tested estimator.  The step-based
+                        # edge above is the fallback for the case it cannot
+                        # handle (levels too close for a midpoint to be
+                        # crossed cleanly).
+                        refined = float(dz[j - 1] + (dz[j] - dz[j - 1]) * frac)
+                        break
+        return air_amp, contact_amp, refined, step_snr
 
     # A descent that reached the floor without halting is NOT proof that the
     # bed was never touched.  The nozzle may be pressed against it right now,
@@ -1705,10 +1739,15 @@ class HaltingContactProbe:
         # salvage at floor -0.53 reported -22% while the true surface was at
         # ~-0.05, i.e. every sample was pressed.
         up = gcmd.get_float("SALVAGE_UP", 0.8, above=0.2)
-        air_a, touch_a, refined = self._verify_contact_moving(
+        air_a, touch_a, refined, step_snr = self._verify_contact_moving(
             gcmd, x0, y0, z_floor, lift_speed, z_limit=z_floor,
             up_override=up)
         drop = (air_a - touch_a) / air_a if air_a > 1e-9 else 0.
+        # Salvage deliberately keeps the RATIO as its sole criterion.  It runs
+        # when the nozzle is already pressed, so the release is a slow rise
+        # over the whole ramp rather than a step at one height - the very shape
+        # the derivative is worst at, and a false "recovered contact" here
+        # invents a bed position out of nothing.
         if drop < thresh or refined is None:
             gcmd.respond_info(
                 "salvage: no contact at the floor either (air=%.0f pressed="
@@ -1764,28 +1803,40 @@ class HaltingContactProbe:
                     return z_sal, True
                 return contact_z, halted
             if gcmd.get_int("VERIFY_MOVING", 1):
-                air_a, touch_a, refined = self._verify_contact_moving(
-                    gcmd, x0, y0, contact_z, lift_speed)
+                air_a, touch_a, refined, step_snr = \
+                    self._verify_contact_moving(gcmd, x0, y0, contact_z,
+                                                lift_speed)
             else:
                 air_a, touch_a, refined = self._verify_contact(
                     gcmd, x0, y0, contact_z, lift_speed, gap, engage)
+                step_snr = 0.   # stationary verify has no ramp to differentiate
             drop = (air_a - touch_a) / air_a if air_a > 1e-9 else 0.
-            if drop >= thresh:
+            # Confirm on EITHER criterion.  The ratio is the established test;
+            # the step test catches the case that forced VERIFY_DROP down to 5%
+            # on this machine, where a real touch reads as a marginal ratio
+            # because the ramp is short and the medians blend air with contact.
+            # Both are computed from the same sweep, so this costs nothing.
+            step_min = gcmd.get_float("VERIFY_STEP_SNR", 8., minval=0.)
+            by_step = step_min > 0. and step_snr >= step_min
+            if drop >= thresh or by_step:
                 final_z = refined if refined is not None else contact_z
                 _dbg(gcmd,
                     "verify: CONFIRMED contact z=%.4f%s (air=%.0f contact=%.0f,"
-                    " -%.0f%% >= %.0f%%)"
+                    " -%.0f%% vs %.0f%%; step SNR %.1f vs %.1f) via %s"
                     % (final_z,
                        (" (refined from %.4f)" % contact_z)
                        if refined is not None else "",
-                       air_a, touch_a, drop * 100., thresh * 100.))
+                       air_a, touch_a, drop * 100., thresh * 100.,
+                       step_snr, step_min,
+                       "ratio" if drop >= thresh else "step"))
                 toolhead.manual_move([x0, y0, final_z], lift_speed)
                 toolhead.wait_moves()
                 return final_z, True
             gcmd.respond_info(
                 "verify: REJECTED false halt z=%.4f (air=%.0f touch=%.0f,"
-                " -%.0f%% < %.0f%%); re-arming below it"
-                % (contact_z, air_a, touch_a, drop * 100., thresh * 100.))
+                " -%.0f%% < %.0f%%; step SNR %.1f < %.1f); re-arming below it"
+                % (contact_z, air_a, touch_a, drop * 100., thresh * 100.,
+                   step_snr, step_min))
             cur_ceiling = contact_z - gap
             if cur_ceiling <= z_floor + 0.02:
                 break
@@ -1878,8 +1929,19 @@ class HaltingContactProbe:
         # sampled at the same resolution regardless of descent speed (windows
         # just overlap more at higher speed).
         win_n = max(8, int(self.detect_cycles / f * sps))
+        # This analysis runs AFTER the halt, so it has no real-time budget and
+        # no reason to inherit the live detector's coarse hop.  The live hop is
+        # floored by MIN_STEP_DT to bound reactor work (host lag starves the MCU
+        # step buffer), but here the samples are already captured and the only
+        # cost is host CPU on a stationary machine.  At 0.2mm/s the inherited
+        # hop is ~160 samples against a 173-sample window - 7% overlap, i.e.
+        # effectively discrete, so contact could only ever be localised to one
+        # window (~0.010mm) plus interpolation.  Oversampling slides the same
+        # window in finer steps and localises the edge to a few SAMPLES.
+        oversample = gcmd.get_int("OVERSAMPLE", 1, minval=1, maxval=32)
         step_n = max(1, int(round(self.detect_step_z * sps
-                                  / max(self._descend_speed, 1e-9))))
+                                  / max(self._descend_speed, 1e-9)))
+                     // oversample)
         # Z span of one window; the detected edge sits ~offset_frac of this above
         # the true contact (window-leading-edge effect), more so at higher speed.
         win_z = (win_n / sps) * self._descend_speed
