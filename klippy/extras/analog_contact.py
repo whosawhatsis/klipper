@@ -235,6 +235,64 @@ def estimate_noise(values, mm_per_sample=None):
     return med
 
 
+def detector_margin(drop, noise, floor, nsigma):
+    """How many times over its own threshold a candidate's drop actually is.
+
+    This is deliberately the DETECTOR'S arithmetic, not a separate scoring
+    formula.  A selector that models noise differently from the thing it is
+    selecting for will mis-rank wherever the two disagree - measured on real
+    descents: a `0.5*drop - (1.15*noise + 0.015)` headroom ranked a candidate
+    SECOND that the detector could not use at all (0% trigger rate), because
+    a 1.15x noise term is far gentler than the nsigma bar the threshold uses.
+    """
+    thr = max(floor, nsigma * noise)
+    if thr <= 0.:
+        return 0.
+    return drop / thr
+
+
+def robust_axis_margin(per_axis, floor, nsigma):
+    """Score a candidate by its SECOND-best axis.
+
+    per_axis: iterable of (drop, noise), or None for an axis with no reading.
+
+    Detection succeeds if ANY armed axis fires, so the score must credit a
+    strong axis.  But which axis carries contact changes with position on the
+    bed (measured across random points: z can go from inert to the strongest
+    detector over 10mm while x halves), so a candidate resting on ONE good axis
+    can go blind where the signal moves off it.  The second-best axis captures
+    both: it is high only when at least two axes are usable, and it rises with
+    their strength.
+
+    Chosen empirically, not by taste.  Against a ground truth computable from
+    the trace corpus - worst location, best axis there, i.e.
+    min over locations of (max over axes) - the candidates ranked:
+
+        2nd-best axis      rho = +0.89
+        mean of axes       rho = +0.71
+        best x redundancy  rho = +0.71
+        max over axes      rho = +0.66
+        MIN over axes      rho = +0.37   <- the intuitive "weakest link" rule
+
+    min() is the worst of them: it ranked a candidate LAST (0.6x) that the
+    ground truth places SECOND (5.4x), because that candidate had two strong
+    axes and one dead one - and a dead third axis costs nothing when the other
+    two work everywhere.
+
+    Returns 0. when fewer than two axes are readable: a single reading is not
+    evidence of redundancy.
+    """
+    vals = []
+    for entry in per_axis:
+        if entry is None:
+            continue
+        drop, noise = entry
+        vals.append(detector_margin(drop, noise, floor, nsigma))
+    if len(vals) < 2:
+        return 0.
+    return sorted(vals, reverse=True)[1]
+
+
 class FindThenRefine:
     """Two-phase probing: find contact fast, then measure it slowly.
 

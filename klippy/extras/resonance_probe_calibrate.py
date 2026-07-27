@@ -11,7 +11,7 @@
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
 import bisect, math, random
-from . import shaper_calibrate
+from . import shaper_calibrate, analog_contact
 from .resonance_probe import HaltingContactProbe, _gen_fixed_freq, \
     _plain, _halt_floor, _halt_headroom
 from .resonance_tester import (TestAxis, _parse_axis,
@@ -678,18 +678,30 @@ class ResonanceProbeCalibrate:
             # have margin while descending - drop/noise could crown a mode whose
             # absolute drop is too small to clear its own floor.  Kept on the
             # same 0-scale sign convention: bigger is better, <=0 is unusable.
+            # characterize_amplitude now returns 'headroom' as the WEAKEST-axis
+            # detector margin (x over threshold), so modes are ranked by the
+            # same quantity the amplitude pick uses and the live halt applies.
+            # The fallback keeps working for callers that predate it, but note
+            # it is the OLD headroom form and is not comparable - it is only a
+            # last resort when a candidate returned no margin at all.
             head = m.get('headroom')
             if head is None:
-                head = 0.5 * drop - (noise * 1.3 + 0.03)
+                all_axes = m.get('all_axes') or {}
+                if all_axes:
+                    head = analog_contact.robust_axis_margin(
+                        [(v['drop'], v['noise']) for v in all_axes.values()],
+                        0.10, 8.)
+                else:
+                    head = 0.
             ranked.append((fq, drop, noise, head, m['axis']))
             all_axes = ", ".join(
                 "%s=%.0f%%/%.1f%%" % (a, v['drop'] * 100., v['noise'] * 100.)
                 for a, v in m['all_axes'].items())
             gcmd.respond_info(
                 "Mode %.1fHz: best aph=%.0f drop=%.0f%% noise=%.1f%%"
-                " headroom=%+.1fpp axis=%s (all axes drop%%/noise%%: %s)"
+                " margin=%.1fx axis=%s (all axes drop%%/noise%%: %s)"
                 % (fq, m['accel_per_hz'], drop * 100., noise * 100.,
-                   head * 100., m['axis'], all_axes))
+                   head, m['axis'], all_axes))
         ranked.sort(key=lambda r: -r[3])
         return ranked
 
@@ -907,11 +919,19 @@ class ResonanceProbeCalibrate:
         # the descending probe has no chance, and shipping it produces a config
         # that silently fails to detect.  Better to fail here so the caller can
         # escalate to another frequency.
-        if m.get('headroom') is not None and m['headroom'] <= 0.:
+        # 'headroom' is now the SECOND-BEST axis's detector margin.  Below 1.0x
+        # fewer than two axes reach their own trigger threshold, so detection
+        # rests on a single axis - and which axis carries contact changes across
+        # the bed, so that config is one bed position away from not detecting.
+        # Measured on the trace corpus, the worst mode scored 1.6x and still
+        # detected; nothing usable scored below 1.0x.
+        if m.get('headroom') is not None and m['headroom'] < 1.0:
             raise gcmd.error(
-                "Calibrate: %.1f Hz leaves no live detection margin at any"
-                " amplitude (best headroom %.1fpp = 0.5*drop - noise*1.3 - 3pp)"
-                " - pick a different mode" % (freq, m['headroom'] * 100.))
+                "Calibrate: at %.1f Hz only one axis reaches its trigger"
+                " threshold at any amplitude (second-best axis %.1fx) -"
+                " detection would depend on which axis carries contact at this"
+                " spot, and that changes across the bed.  Pick another mode"
+                % (freq, m['headroom']))
         if m.get('all_axes'):
             snr, why = self._snr_floors(ceils, m['all_axes'], 1.3, 0.03, 0.9)
             floors = snr
@@ -1401,8 +1421,8 @@ class ResonanceProbeCalibrate:
                     contact_z, ranked, ambiguous = cz, trial, False
                     gcmd.respond_info(
                         "Mode select: contact at z=%.4f confirmed (best %.1f Hz"
-                        " drop=%.0f%% headroom=%+.1fpp)"
-                        % (cz, pick[0], pick[1] * 100., pick[3] * 100.))
+                        " drop=%.0f%% margin=%.1fx)"
+                        % (cz, pick[0], pick[1] * 100., pick[3]))
                     break
                 if verdict == 'none':
                     # Nothing damps on any candidate at this contact - genuine
@@ -1449,7 +1469,7 @@ class ResonanceProbeCalibrate:
                 " trusting it" % contact_z)
         gcmd.respond_info(
             "Mode select: ranking by live headroom (best first):\n"
-            + "\n".join("  %.1f Hz: drop=%.0f%% noise=%.1f%% headroom=%+.1fpp"
+            + "\n".join("  %.1f Hz: drop=%.0f%% noise=%.1f%% margin=%.1fx"
                         " axis=%s"
                         % (f, d*100., n*100., s*100., a)
                         for (f, d, n, s, a) in ranked))
@@ -1697,7 +1717,7 @@ class ResonanceProbeCalibrate:
                    if ambiguous else "")
                 + "\n".join(
                     "    %.1f Hz: drop=%.0f%% noise=%.1f%%"
-                    " headroom=%+.1fpp axis=%s"
+                    " margin=%.1fx axis=%s"
                     % (f, d * 100., n * 100., s * 100., a)
                     for (f, d, n, s, a) in ranked))
         gcmd.respond_info(

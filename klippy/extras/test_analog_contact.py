@@ -164,6 +164,51 @@ def test_find_then_refine_survives_a_failed_refine():
     assert ftr.run() == (None, False)
 
 
+def test_margin_uses_the_detectors_own_threshold():
+    from .analog_contact import detector_margin
+    # Below the floor, noise is irrelevant - the floor binds.
+    assert abs(detector_margin(0.40, 0.001, 0.10, 8.) - 4.0) < 1e-9
+    # Above it, nsigma*noise binds: 8*0.05 = 0.40 -> margin 1.0
+    assert abs(detector_margin(0.40, 0.05, 0.10, 8.) - 1.0) < 1e-9
+
+
+def test_best_mode_wins_on_the_real_case():
+    from .analog_contact import robust_axis_margin
+    FLOOR, NS = 0.10, 8.
+    # Measured: 148Hz has a strong x but a noisy y; 172.9Hz is strong on all
+    # three.  172.9 must win - it did, live and in corpus replay.
+    m148 = [(0.40, 0.006), (0.59, 0.061), (0.59, 0.011)]
+    m173 = [(0.59, 0.009), (0.69, 0.016), (0.72, 0.010)]
+    assert (robust_axis_margin(m173, FLOOR, NS)
+            > robust_axis_margin(m148, FLOOR, NS))
+
+
+def test_two_strong_axes_beat_three_mediocre_ones():
+    from .analog_contact import robust_axis_margin
+    FLOOR, NS = 0.10, 8.
+    # THE case that killed min-over-axes.  Detection needs only one axis to
+    # fire; a dead third axis costs nothing when the other two work at every
+    # location.  Ground truth (worst location, best axis) put this candidate
+    # SECOND while min-over-axes ranked it LAST.
+    two_strong = [(0.72, 0.008), (0.60, 0.130), (0.70, 0.014)]   # y dead
+    three_weak = [(0.20, 0.012), (0.22, 0.014), (0.21, 0.013)]   # all ~1.5x
+    assert min(robust_axis_margin([e], FLOOR, NS) for e in [None]) == 0.
+    assert (robust_axis_margin(two_strong, FLOOR, NS)
+            > robust_axis_margin(three_weak, FLOOR, NS))
+    # ...and a single strong axis with NO backup must not beat two strong ones.
+    one_strong = [(0.90, 0.004), (0.05, 0.090), (0.04, 0.080)]
+    assert (robust_axis_margin(two_strong, FLOOR, NS)
+            > robust_axis_margin(one_strong, FLOOR, NS))
+
+
+def test_fewer_than_two_readable_axes_scores_zero():
+    from .analog_contact import robust_axis_margin
+    # One reading is not evidence of redundancy.
+    assert robust_axis_margin([(0.9, 0.001), None, None], 0.10, 8.) == 0.
+    assert robust_axis_margin([(0.9, 0.001), None, (0.9, 0.001)],
+                              0.10, 8.) > 0.
+
+
 if __name__ == '__main__':
     for name, fn in sorted(globals().items()):
         if name.startswith('test_'):

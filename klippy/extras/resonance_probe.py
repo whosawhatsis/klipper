@@ -1455,6 +1455,13 @@ class HaltingContactProbe:
         self.detect_step_z = detect_step_z
         self.detect_confirm_z = detect_confirm_z
         self.detect_offset_frac = detect_offset_frac
+        # Selector thresholds.  Default to the LIVE drawdown detector's values
+        # so calibration scores candidates by the same bar the halt will use;
+        # fall back to the module defaults when there is no probe object (this
+        # helper is also constructed directly by the calibration commands).
+        rp = printer.lookup_object('resonance_probe', None)
+        self._sel_floor = getattr(rp, 'drawdown_sensitivity', 0.10) or 0.10
+        self._sel_nsigma = getattr(rp, 'drawdown_nsigma', 8.) or 8.
         self._descend_speed = 1.
         self._z_steppers = None
         # Timing-corrected reversal cruise velocity, installed by run() for the
@@ -2710,9 +2717,32 @@ class HaltingContactProbe:
             raise gcmd.error("Calibrate: amplitude sweep saw no usable contact"
                              " drop; check the start height/floor")
 
+        # Score by the DETECTOR'S margin on the WEAKEST axis, not by headroom
+        # on the best one.  Both changes were derived by simulating the live
+        # detector over recorded descents (scripts/selector_eval.py):
+        #
+        #  - Weakest, not best: which axis carries contact varies with bed
+        #    position, so a level chosen because one axis looked excellent here
+        #    can go blind elsewhere.  Simulated all-axis trigger rate over the
+        #    corpus: 172.9Hz 100%, 212.2Hz 75%, 65.5Hz 50%, 148Hz 27%.
+        #  - Detector arithmetic, not headroom: headroom charges 1.15*noise
+        #    where the live threshold is max(floor, nsigma*sd).  The gentler
+        #    term over-rewards high-drop/high-noise candidates - it ranked
+        #    aph 60 SECOND where simulation ranks it LAST (0% trigger rate),
+        #    because low amplitude grows the drop on the good axes while
+        #    raising the marginal axis's noise faster still.
+        sel_floor = gcmd.get_float("SELECT_FLOOR", self._sel_floor, above=0.)
+        sel_nsigma = gcmd.get_float("SELECT_NSIGMA", self._sel_nsigma,
+                                    minval=1.)
+
         def headroom(i):
-            # Shared model - see _halt_headroom().
-            return _halt_headroom(results[i][2], results[i][3])
+            # Retained under its old name so the reporting below is unchanged;
+            # the VALUE is now a margin (x over threshold), not percentage
+            # points - see the report string.
+            per_axis = results[i][5]
+            return analog_contact.robust_axis_margin(
+                [None if r is None else (r[1], r[2]) for r in per_axis],
+                sel_floor, sel_nsigma)
         # NO separate noise cap.  Headroom already subtracts the noise term
         # (noise*1.15 + 0.015), so filtering by noise a second time
         # double-counts it and can override the metric outright: on hardware a
@@ -2736,18 +2766,21 @@ class HaltingContactProbe:
                 " noise<=%.1f%%; using the best available headroom"
                 % (min_drop * 100., target_noise * 100.))
         gcmd.respond_info(
-            "Calibrate: amplitude by live headroom (usable halt-floor window):"
-            " %s -> accel_per_hz=%.0f (headroom %.1fpp)"
-            % (", ".join("%.0f:%.1fpp" % (results[i][0], headroom(i) * 100.)
+            "Calibrate: amplitude by 2nd-best-axis detector margin:"
+            " %s -> accel_per_hz=%.0f (margin %.1fx)"
+            % (", ".join("%.0f:%.1fx" % (results[i][0], headroom(i))
                          for i in valid),
-               chosen[0], headroom(pick) * 100.))
+               chosen[0], headroom(pick)))
         chosen_headroom = headroom(pick)
-        if chosen_headroom <= 0.:
+        # At 1.0x the second axis only just reaches its threshold, so ordinary
+        # run-to-run variation leaves detection resting on one axis.  On the
+        # trace corpus the worst usable mode scored 1.6x; the best scored 6.9x.
+        if chosen_headroom < 2.5:
             gcmd.respond_info(
-                "Calibrate: WARNING - the best amplitude still leaves NO live"
-                " margin (headroom %.1fpp); this mode is unlikely to detect"
-                " reliably while descending - consider another frequency"
-                % (chosen_headroom * 100.))
+                "Calibrate: WARNING - only %.1fx margin on the SECOND-best"
+                " axis, so detection leans on a single axis and a different"
+                " bed position could shift the signal off it.  Consider"
+                " another frequency" % (chosen_headroom,))
         aph, baseline, drop, noise, best_axis, per_axis = chosen
         gcmd.respond_info("Calibrate: chose accel_per_hz=%.0f (drop=%.0f%%,"
                           " noise=%.1f%%, axis=%s)"
