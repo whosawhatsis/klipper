@@ -694,9 +694,26 @@ class ResonanceProbeCalibrate:
         # single descent at strong amplitude, so this is not the slow part).
         speed = gcmd.get_float("CONTACT_SPEED", 0.1, above=0., maxval=5.)
         warmup = gcmd.get_float("CONTACT_WARMUP", 0.5, above=0.05)
-        # Bounded bidirectional amplitude-sweep parameters.
-        up_margin = gcmd.get_float("CONTACT_UP", 0.10, above=0.)
-        down_margin = gcmd.get_float("CONTACT_DOWN", 0.04, above=0.)
+        # Bounded bidirectional amplitude-sweep parameters.  The ramp SPAN
+        # (up+down = 0.05mm) is chosen together with CONTACT_RAMP_SPEED - see
+        # characterize_amplitude.  Briefly: segments per ramp are
+        # (span/speed)/(0.5/f), so a narrow span is what pays for a ramp slow
+        # enough that one analysis window (detect_cycles/f seconds) is narrower
+        # than the ~0.030mm contact event.  0.05mm at 0.5mm/s gives a 0.027mm
+        # window in 42 segments at 212Hz; the old 0.14mm span needed 1.0mm/s to
+        # stay affordable, and at that speed the window was 0.054mm - it
+        # averaged the whole event away.  Widen this span only together with a
+        # proportionally faster ramp, or the MCU runs out of step buffer.
+        #
+        # Narrowing also presses less: the contact dwell now bottoms out 0.02mm
+        # below contact instead of 0.04mm.  The air reference correspondingly
+        # sits 0.03mm above contact rather than 0.10mm - still clear air (the
+        # transition is ~0.03mm wide), and closer to the height the live probe
+        # actually references, though it does make the measured drops slightly
+        # LARGER than previously saved calibrations, since the air baseline
+        # rides the height-dependent rise.
+        up_margin = gcmd.get_float("CONTACT_UP", 0.03, above=0.)
+        down_margin = gcmd.get_float("CONTACT_DOWN", 0.02, above=0.)
         cycles = gcmd.get_int("CONTACT_CYCLES", 4, minval=1)
         n_levels = gcmd.get_int("CONTACT_LEVELS", 5, minval=1)
         min_drop = gcmd.get_float("CONTACT_MIN_DROP", 0.10, above=0., below=1.)
@@ -1287,8 +1304,8 @@ class ResonanceProbeCalibrate:
                              " %.3f; raise the nozzle" % (ceiling, z_min))
         warmup = gcmd.get_float("CONTACT_WARMUP", 0.5, above=0.05)
         speed = gcmd.get_float("CONTACT_SPEED", 0.1, above=0., maxval=5.)
-        up_margin = gcmd.get_float("CONTACT_UP", 0.10, above=0.)
-        down_margin = gcmd.get_float("CONTACT_DOWN", 0.04, above=0.)
+        up_margin = gcmd.get_float("CONTACT_UP", 0.03, above=0.)
+        down_margin = gcmd.get_float("CONTACT_DOWN", 0.02, above=0.)
         cycles = gcmd.get_int("CONTACT_CYCLES", 4, minval=1)
         min_drop = gcmd.get_float("CONTACT_MIN_DROP", 0.10, above=0., below=1.)
         target_noise = gcmd.get_float("CONTACT_TARGET_NOISE", 0.06,
@@ -2115,8 +2132,8 @@ class ResonanceProbeCalibrate:
         speed = gcmd.get_float("CONTACT_SPEED", 0.1, above=0., maxval=5.)
         # Warmup reused from the probe (its ring-up time is the same physics).
         warmup = gcmd.get_float("CONTACT_WARMUP", probe.warmup, above=0.05)
-        up_margin = gcmd.get_float("CONTACT_UP", 0.10, above=0.)
-        down_margin = gcmd.get_float("CONTACT_DOWN", 0.04, above=0.)
+        up_margin = gcmd.get_float("CONTACT_UP", 0.03, above=0.)
+        down_margin = gcmd.get_float("CONTACT_DOWN", 0.02, above=0.)
         cycles = gcmd.get_int("CONTACT_CYCLES", 4, minval=1)
         min_drop = gcmd.get_float("CONTACT_MIN_DROP", 0.10, above=0., below=1.)
         target_noise = gcmd.get_float("CONTACT_TARGET_NOISE", 0.06, above=0.,

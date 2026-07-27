@@ -2286,29 +2286,66 @@ class HaltingContactProbe:
         # never started while touching the bed.  The contact dwell is kept short
         # (bed/nozzle wear) since the moving ramp is the probe-relevant metric.
         dwell_t = gcmd.get_float("CONTACT_DWELL", 0.35, above=0.1)
-        # DO NOT lower this default without fixing the segment budget first.
-        # Resolution and MCU safety pull in opposite directions here:
-        #   - Matching the live descent wants a SLOW ramp.  One analysis window
-        #     spans detect_cycles/f seconds, so at 1.0mm/s it covers ~0.054mm
-        #     of Z - wider than the LIVE_WIN_Z onset band, which is why the
-        #     moving numbers are smeared across the surface (the warning below
-        #     says so explicitly).
-        #   - But segments-per-ramp is (z_travel/speed)/(0.5/f), so halving the
-        #     speed doubles them.  Dropping 1.0 -> 0.3mm/s took 212Hz from ~59
-        #     segments per ramp to ~198 and shut the MCU down with "Timer too
-        #     close" - measured, not theoretical.
-        # The fix is to shrink the ramp's Z span (fewer segments at the same
-        # speed), not to slow it down at the current span.  Until then, keep
-        # the ramp fast enough to be safe and treat the moving figures as
-        # smeared.
-        ramp_speed = gcmd.get_float("CONTACT_RAMP_SPEED", 1.0, above=0.,
-                                    maxval=10.)
+        # Ramp speed and span are chosen TOGETHER; changing one alone breaks
+        # the other.  Segments per ramp are (z_travel/speed)/(0.5/f), so the
+        # span pays for the speed:
+        #   1.0mm/s over 0.14mm -> 59 segments @212Hz, but a 0.054mm window,
+        #       twice the ~0.030mm contact event - it smears it away entirely.
+        #   0.3mm/s over 0.14mm -> 198 segments, and this SHUT THE MCU DOWN
+        #       ("Timer too close", measured).
+        #   0.5mm/s over 0.05mm -> 42 segments (fewer than today) AND a 0.027mm
+        #       window, just inside the event.  Both better at once.
+        # Hence the narrow span below.  Do not slow this further "for
+        # resolution": a step detector gets WORSE with finer sampling, because
+        # a fixed drop split across more windows shrinks each per-window step
+        # toward the noise.  Measured on the verify ramp: 0.5 -> 0.3mm/s took
+        # step SNR from 9.9-24.2 down to 3.0-10.7.  ~2-3 windows across the
+        # event is the target, which is where 0.5mm/s sits.
+        # Scale the ramp speed WITH the excitation frequency.  A window spans
+        # (detect_cycles/f) seconds, so at a fixed mm/s its Z width changes
+        # threefold across the candidate range - 0.5mm/s gives 0.061mm at
+        # 65.5Hz but 0.019mm at 212Hz, i.e. a fixed speed cannot resolve the
+        # contact event at both ends.  Deriving speed from f pins the window at
+        # RAMP_WIN_Z regardless of frequency.
+        #
+        # It also fixes the segment budget for free: segments per ramp are
+        # span*2f/speed, so with speed proportional to f the frequency cancels
+        # and every candidate costs the same ~40 segments.
+        RAMP_WIN_Z = 0.020
+        auto_speed = RAMP_WIN_Z * f / max(self.detect_cycles, 1e-9)
+        ramp_speed = gcmd.get_float("CONTACT_RAMP_SPEED",
+                                    min(max(auto_speed, 0.05), 2.0),
+                                    above=0., maxval=10.)
         # Same MCU step-buffer overrun protection as the halting descent (see
         # HaltingContactProbe.run) - a bounded oscillation at high excitation
         # frequency is exactly as prone to "Timer too close".
         drip_time = gcmd.get_float("DRIP_TIME", 0.3, minval=0.) or None
-        reps = cycles_per_level
         z_travel = z_hi - z_lo
+        # SEGMENT BUDGET GUARD.  Every segment is one lateral half-cycle, and
+        # the host must keep the MCU step buffer fed for all of them; overrun
+        # is an MCU shutdown ("Timer too close"), which aborts calibration and
+        # leaves the printer needing FIRMWARE_RESTART.  This has bitten twice,
+        # both times from changing ONE parameter without redoing the
+        # arithmetic: ramp speed 1.0 -> 0.3mm/s (475 -> 1583 segments/level),
+        # and cycles 4 -> 10 (339 -> 848).  Measured on this machine: ~475 per
+        # level is fine, 848 is not.
+        #
+        # So compute it and cap the reps, rather than trusting the caller to.
+        # Reps are the right thing to give up: fewer ramps means noisier
+        # per-level statistics, which degrades the result, where an overrun
+        # destroys the whole run.
+        MAX_SEGS_PER_LEVEL = 500
+        ramp_t_est = max(z_travel / max(ramp_speed, 1e-3), 2. * half_dt)
+        segs_per_ramp = max(2, int(round(ramp_t_est / half_dt)))
+        max_reps = max(1, MAX_SEGS_PER_LEVEL // (2 * segs_per_ramp))
+        reps = cycles_per_level
+        if reps > max_reps:
+            gcmd.respond_info(
+                "Calibrate: capping CONTACT_CYCLES %d -> %d at %.1fHz (%d"
+                " segments/ramp x2 would exceed the %d-segment budget and risk"
+                " an MCU 'Timer too close' shutdown)"
+                % (reps, max_reps, f, segs_per_ramp, MAX_SEGS_PER_LEVEL))
+            reps = max_reps
         ramp_t = max(z_travel / max(ramp_speed, 1e-3), 2. * half_dt)
         air_dwell_segs = max(4, int(round(dwell_t / half_dt)))
         contact_dwell_segs = max(3, int(round(max(0.2, 0.55 * dwell_t)
