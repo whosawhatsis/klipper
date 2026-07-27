@@ -2174,13 +2174,18 @@ class HaltingContactProbe:
             def is_clean(a):
                 return (per_axis[a][1] >= min_drop
                         and per_axis[a][2] <= target_noise)
+            # Pick the axis with the most halt-floor headroom, NOT the
+            # configured one whenever it merely passes.  Preferring
+            # output_index hid dramatically better detectors: measured at
+            # 131.0Hz, x read 21%/0.9% (headroom 8.2pp) and was chosen, while
+            # y read 89%/4.9% (headroom 37pp) on the same touch and was
+            # discarded.  Ranking modes, choosing the amplitude and setting the
+            # floors all use headroom, so the axis must too or the pipeline
+            # disagrees with itself about what "detectable" means.
             clean_axes = [a for a in valid_axes if is_clean(a)]
-            if self.output_index in clean_axes:
-                best_axis = self.output_index
-            elif clean_axes:
-                best_axis = max(clean_axes, key=lambda a: per_axis[a][1])
-            else:
-                best_axis = max(valid_axes, key=lambda a: per_axis[a][1])
+            pool = clean_axes or valid_axes
+            best_axis = max(pool, key=lambda a: _halt_headroom(per_axis[a][1],
+                                                               per_axis[a][2]))
             baseline, drop, noise, mdrop = per_axis[best_axis]
             results.append((aph, baseline, drop, noise, best_axis, per_axis))
             gcmd.respond_info(
@@ -2225,16 +2230,17 @@ class HaltingContactProbe:
         def headroom(i):
             # Shared model - see _halt_headroom().
             return _halt_headroom(results[i][2], results[i][3])
-        # Hard noise cap on top of the clean test.  The derived sensitivity and
-        # halt thresholds come from the CHOSEN level's numbers, so letting a
-        # noisy level win drags them with it - the run that picked a 3.8%-noise
-        # level shipped sensitivity 0.097 / halt 0.194 where quieter levels give
-        # 0.060 / 0.128.  Prefer quiet levels whenever any exist.
-        NOISE_CAP = 0.03
+        # NO separate noise cap.  Headroom already subtracts the noise term
+        # (noise*1.15 + 0.015), so filtering by noise a second time
+        # double-counts it and can override the metric outright: on hardware a
+        # 3% cap made this pick 6.7pp over 15.3pp at 65.5Hz and 8.2pp over
+        # 19.0pp at 131Hz, both times dropping to a much lower amplitude.
+        # That was audible - aph 30 is ~12um of displacement against ~42um at
+        # 120 - and quieter is not safer: it is the low-amplitude end where the
+        # live signal gets too small to detect.
         clean = [i for i in valid
                  if results[i][2] >= min_drop and results[i][3] <= target_noise]
-        quiet = [i for i in clean if results[i][3] <= NOISE_CAP]
-        pool = quiet or clean or valid
+        pool = clean or valid
         # Strict argmax, with the gentler (lower) amplitude winning exact ties.
         # Deliberately NO "within a whisker, prefer lower amplitude" band: the
         # low-amplitude end is precisely where noise explodes, so a tolerance

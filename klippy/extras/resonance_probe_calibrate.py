@@ -1247,6 +1247,27 @@ class ResonanceProbeCalibrate:
                               ceil * 100., _halt_headroom(drop, ceil) * 100.))
         return floors, why
 
+    # Decide whether a VERIFY-confirmed contact's per-mode ranking is
+    # trustworthy.  'trial' is a list of (freq, drop, noise, detectability,
+    # axis).  Because the contact was already verified (air-vs-press) by the
+    # finder's HaltingContactProbe, a clean mode is a real surface - there is no
+    # loudest-in-air "primary" gate (that wrongly rejected contact when the
+    # loudest air mode does not damp, e.g. after a belt change).  Returns
+    # (verdict, pick): 'clean' + best-detectability clean mode -> accept;
+    # 'none' + None when nothing damps (<3% on every candidate) -> escalate to
+    # the next finder frequency; 'weak' + best-drop mode when there is some
+    # damping but nothing clean -> caller's best-effort / nudge path.  Shared by
+    # the RANK_FREQ finder and the CALIBRATE_MESH _mode_low_first finder.
+    def _accept_ranked_contact(self, trial, min_drop, target_noise):
+        best_drop = max((d for (_f, d, _n, _s, _a) in trial), default=0.)
+        clean = [e for e in trial
+                 if e[1] >= min_drop and e[2] <= target_noise]
+        if clean:
+            return 'clean', max(clean, key=lambda e: e[3])
+        if best_drop < 0.03:
+            return 'none', None
+        return 'weak', max(trial, key=lambda e: e[1])
+
     def _finder_rank_at_point(self, gcmd, chip, accel_axis, axis, candidates):
         toolhead = self.printer.lookup_object('toolhead')
         pos = toolhead.get_position()
