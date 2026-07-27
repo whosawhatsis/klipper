@@ -202,6 +202,22 @@ def _window_amps_tagged(times, cols, freq, win_n, step_n, seg_end):
     return [np.array(w) for w in wamps], np.array(wk)
 
 
+# Per-probe instrumentation, silent unless VERBOSE=1.
+#
+# These lines were the most valuable debugging asset in getting detection
+# working, so they are GATED rather than deleted.  But a single descent emits
+# about six of them, so PROBE_ACCURACY SAMPLES=5 prints ~30 lines and a bed
+# mesh prints hundreds - unusable as a default.  Every command that reaches
+# this module takes the flag, e.g. "PROBE_ACCURACY SAMPLES=5 VERBOSE=1" or
+# "BED_MESH_CALIBRATE VERBOSE=1".
+#
+# Warnings, errors and anything reporting a RECOVERED or REJECTED condition
+# stay unconditional - those are things the user must see.
+def _dbg(gcmd, msg):
+    if gcmd.get_int("VERBOSE", 0):
+        gcmd.respond_info(msg)
+
+
 # gcmd wrapper that swallows respond_info (all other access passes through to
 # the originating command) so a fixed-frequency driven-scan test does not print
 # a "Testing frequency" line per step during a retune.
@@ -1555,7 +1571,7 @@ class HaltingContactProbe:
             drop = (air_a - touch_a) / air_a if air_a > 1e-9 else 0.
             if drop >= thresh:
                 final_z = refined if refined is not None else contact_z
-                gcmd.respond_info(
+                _dbg(gcmd,
                     "verify: CONFIRMED contact z=%.4f%s (air=%.0f contact=%.0f,"
                     " -%.0f%% >= %.0f%%)"
                     % (final_z,
@@ -1816,7 +1832,7 @@ class HaltingContactProbe:
         self._descent_v = vt
         cruise_v = vt if vt else peak_v
         if vt:
-            gcmd.respond_info(
+            _dbg(gcmd,
                 "Descent timing fix: cruise %.2f mm/s (was %.2f), scv=%.2f,"
                 " targeting %.1f Hz motion"
                 % (vt, peak_v, descent_scv, self.excitation_freq))
@@ -1875,7 +1891,7 @@ class HaltingContactProbe:
         # descent-noise ceiling (see RESONANCE_PROBE_CHARACTERIZE_NOISE).
         self.last_maxdrop = [float(endstop._dbg_maxdrop[a])
                              for a in range(endstop.AXIS_COUNT)]
-        gcmd.respond_info(
+        _dbg(gcmd,
             "live-halt diag: max gradient drop x=%.0f%% y=%.0f%% z=%.0f%% over"
             " %d live windows (floor x=%.0f%% y=%.0f%% z=%.0f%%)"
             % (endstop._dbg_maxdrop[0] * 100., endstop._dbg_maxdrop[1] * 100.,
@@ -1883,7 +1899,7 @@ class HaltingContactProbe:
                endstop._halt_axis[0] * 100., endstop._halt_axis[1] * 100.,
                endstop._halt_axis[2] * 100.))
         a0 = [(sum(v) / len(v)) if v else 0. for v in endstop._dbg_amp0]
-        gcmd.respond_info(
+        _dbg(gcmd,
             "live-halt diag: start-of-descent air amplitude x=%.0f y=%.0f z=%.0f"
             " (win=%s samp/%.3fmm step=%.3fmm)"
             % (a0[0], a0[1], a0[2], endstop._win_n, endstop._dbg_win_z,
@@ -1894,7 +1910,7 @@ class HaltingContactProbe:
         dz = [(endstop._dbg_maxdrop_t[a] - endstop._armed_time)
               * endstop._descend_speed if endstop._dbg_maxdrop_t[a] else -1.
               for a in range(endstop.AXIS_COUNT)]
-        gcmd.respond_info(
+        _dbg(gcmd,
             "live-halt diag: max drop at mm-below-arm x=%.2f y=%.2f z=%.2f"
             % (dz[0], dz[1], dz[2]))
         # Precise contact Z from the captured stream (fine 'sensitivity').  The
@@ -1915,7 +1931,7 @@ class HaltingContactProbe:
         # or the refinement can find nothing on an axis that never dropped.
         trig_axis = endstop.get_trigger_axis() if halted else None
         if halted:
-            gcmd.respond_info("Resonance probe: live halt triggered on axis=%s"
+            _dbg(gcmd,"Resonance probe: live halt triggered on axis=%s"
                               % 'xyz'[trig_axis])
         contact_z = self._analyze_drip(gcmd, samples, anchor_t, anchor_z,
                                        z_floor, t0 + self.warmup,
