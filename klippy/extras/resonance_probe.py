@@ -387,6 +387,17 @@ class ResonanceProbe:
         self.halt_sensitivity_axis = [
             config.getfloat('halt_sensitivity_%s' % ax, None,
                             above=0., below=1.) for ax in 'xyz']
+        # DERIVATIVE halt threshold: the single-window amplitude down-step that
+        # counts as contact, used in PARALLEL with halt_sensitivity above.  See
+        # _HostResonanceEndstop for the measurements; briefly, contact is a
+        # ~3-window step that the ratio test's median smoothing dilutes away on
+        # quieter axes, while the per-window step separates air from contact by
+        # >26 sigma.  Set 0 to disable and run on the ratio test alone.
+        self.deriv_sensitivity = config.getfloat('deriv_sensitivity', 0.08,
+                                                 minval=0., below=1.)
+        self.deriv_sensitivity_axis = [
+            config.getfloat('deriv_sensitivity_%s' % ax, None,
+                            above=0., below=1.) for ax in 'xyz']
         self.allow_z = config.getboolean('allow_z_vibration', False)
         # Parse the printer axis to vibrate (x/y/z or a dx,dy,dz vector)
         raw_axis = config.get('vibrate_axis', 'x')
@@ -942,6 +953,13 @@ class _HostResonanceEndstop:
         # expensive - reconstructing Z, differentiating, writing a file -
         # happens after the descent, never in here.
         self._trace = []
+        # Derivative trigger state: previous window's amplitude per axis, the
+        # consecutive-step run, and the largest DOWN step seen (diagnostic, the
+        # derivative counterpart of _dbg_maxdrop).
+        self._prev_amp = [None] * self.AXIS_COUNT
+        self._deriv_run = [0] * self.AXIS_COUNT
+        self._dbg_minstep = [0.] * self.AXIS_COUNT
+        self._trigger_kind = 'gradient'
         self._dbg_win_z = 0.   # Z span one DFT window averages over (see below)
         # Window sized lazily from the measured sample rate (first batches).
         # The window is a fixed time; the step is a fixed Z distance (so the
@@ -970,6 +988,47 @@ class _HostResonanceEndstop:
         self._halt_axis = [
             (axis_floor[i] if axis_floor and axis_floor[i] is not None
              else self._halt_sens) for i in range(self.AXIS_COUNT)]
+        # Per-axis DERIVATIVE floor: the single-window down-step that counts as
+        # contact.  Measured over 4 descents at 148Hz, the worst air excursion
+        # was -1.85% (x) / -2.53% (z) against contact steps of -21% / -23%, so
+        # anything in the -5..-10% band has ~3x margin on BOTH sides.  Default
+        # 8%, overridable per axis, and floored at 6x the axis's characterized
+        # descent noise where that is known - a twitchy axis (y: air sd 8.3%,
+        # worst air excursion -23%) then disarms itself from its own numbers
+        # rather than by rule, exactly as the ratio floors do.
+        self._deriv_sens = getattr(rprobe, 'deriv_sensitivity', 0.08)
+        deriv_floor = getattr(rprobe, 'deriv_sensitivity_axis', None)
+        # Scale the per-axis derivative floor off that axis's RATIO floor, which
+        # calibration already derived from its measured descent noise.  An axis
+        # that needed a high ratio floor is noisy and needs a high derivative
+        # floor for the same reason.  1.5x because the ratio floor is set
+        # against a SMOOTHED drop while this test sees single-window noise,
+        # which is larger.
+        #
+        # Do not reintroduce a `descent_noise_axis` fallback here: no such
+        # attribute exists, so an earlier version silently armed every axis at
+        # the flat 8% default.  On y (air sd 8.3%) that is a 1-sigma threshold,
+        # and it produced a false halt 660um above the bed on the first live
+        # test.  Measured floors under this rule: x 10.8%, y 32.3%, z 13.4%,
+        # against contact steps of -21% (x), -37% (y), -23% (z) and worst air
+        # excursions of -1.9% (x), -23.2% (y), -2.5% (z).
+        # (no noise_axis fallback - see above)
+        # 0 disables the derivative trigger entirely (ratio test only).  Note
+        # this MUST short-circuit the per-axis derivation below - a threshold of
+        # 0 would otherwise make "step <= -0" true on every window and halt the
+        # descent immediately.
+        self._deriv_axis = [None] * self.AXIS_COUNT
+        if self._deriv_sens > 0.:
+            for i in range(self.AXIS_COUNT):
+                if deriv_floor and deriv_floor[i] is not None:
+                    self._deriv_axis[i] = deriv_floor[i]
+                else:
+                    self._deriv_axis[i] = max(self._deriv_sens,
+                                              1.5 * self._halt_axis[i])
+        # Two consecutive down-steps, matching _grad_persist.  Contact gave 2-3
+        # such windows in every trace, and a single-window rule would be one
+        # noise excursion away from a false halt.
+        self._deriv_persist = 2
 
     def get_steppers(self):
         return self._steppers
@@ -1188,6 +1247,53 @@ class _HostResonanceEndstop:
                     self._dbg_maxdrop_t[a_idx] = float(tc)
                 if a_idx == 0:
                     self._dbg_nwin += 1
+                # DERIVATIVE trigger, in parallel with the ratio test above.
+                # The ratio compares a MEDIAN over smooth_dt against one a
+                # ref_dt above, which is robust against the gentle air rise but
+                # cannot see a short event: contact is a ~3-window step, so the
+                # current-side median is still mostly air when it happens.  On
+                # hardware that cost the z axis entirely - z stepped -22..-26%
+                # at contact, well above its 9% floor, yet the ratio never read
+                # more than 4-7% and z never triggered once in five descents.
+                #
+                # The per-window change has no such dilution, and separates far
+                # better (measured over 4 descents at 148Hz):
+                #   x: air sd 0.62-0.70%, worst air -1.85%, contact -21..-24%
+                #   z: air sd 0.87-0.92%, worst air -2.53%, contact -23..-27%
+                #   y: air sd 8.2-8.8%,   worst air -23.2%, contact -37..-44%
+                # i.e. >26 sigma on x and z.  It also needs no smoothing, so the
+                # rising air baseline is handled structurally rather than by
+                # tuning it out.
+                #
+                # SIGNED, deliberately: the FIRST contact window steps UP on the
+                # cross axes (z +13.8%, y +25.4%), most likely the nozzle
+                # scrubbing the platform texture adding a new vibration source
+                # before damping takes over.  An absolute-value test would fire
+                # on that transient instead of on contact.
+                #
+                # Kept alongside the ratio rather than replacing it: the ratio
+                # is what currently delivers 3.5um repeatability on x, and four
+                # descents is not enough evidence to retire a working
+                # safety-critical path.  If the derivative keeps proving better,
+                # the ratio test (and its smoothing machinery) should go.
+                prev = self._prev_amp[a_idx]
+                self._prev_amp[a_idx] = float(amps[a_idx])
+                thr = self._deriv_axis[a_idx]
+                if prev is not None and prev > 1e-9:
+                    step = (float(amps[a_idx]) - prev) / prev
+                    if step < self._dbg_minstep[a_idx]:
+                        self._dbg_minstep[a_idx] = step
+                    if thr and step <= -thr:
+                        self._deriv_run[a_idx] += 1
+                        if self._deriv_run[a_idx] >= self._deriv_persist:
+                            self._trigger_time = float(tc)
+                            self._trigger_axis = a_idx
+                            self._trigger_kind = 'derivative'
+                            self._done = True
+                            self._completion.complete(True)
+                            return False
+                    else:
+                        self._deriv_run[a_idx] = 0
                 if drop >= self._halt_axis[a_idx]:
                     if self._below_run[a_idx] == 0:
                         # Anchor the trigger to the reference time (~confirm_z
@@ -2006,6 +2112,14 @@ class HaltingContactProbe:
                endstop._dbg_maxdrop[2] * 100., endstop._dbg_nwin,
                endstop._halt_axis[0] * 100., endstop._halt_axis[1] * 100.,
                endstop._halt_axis[2] * 100.))
+        dfloor = ["%.0f%%" % (t * 100.) if t else "off"
+                  for t in endstop._deriv_axis]
+        _dbg(gcmd,
+            "live-halt diag: biggest 1-window step x=%.0f%% y=%.0f%% z=%.0f%%"
+            " (deriv floor x=%s y=%s z=%s) - halt came from the %s test"
+            % (endstop._dbg_minstep[0] * 100., endstop._dbg_minstep[1] * 100.,
+               endstop._dbg_minstep[2] * 100.,
+               dfloor[0], dfloor[1], dfloor[2], endstop._trigger_kind))
         a0 = [(sum(v) / len(v)) if v else 0. for v in endstop._dbg_amp0]
         _dbg(gcmd,
             "live-halt diag: start-of-descent air amplitude x=%.0f y=%.0f z=%.0f"
