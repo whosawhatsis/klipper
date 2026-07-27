@@ -14,8 +14,8 @@
 # Copyright (C) 2026
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
-import logging, math, random
-from . import probe, manual_probe, shaper_calibrate
+import logging, math, os, random
+from . import probe, manual_probe, shaper_calibrate, analog_contact
 from .homing import HomingMove
 from .resonance_tester import TestAxis, ResonanceTestExecutor
 
@@ -398,6 +398,25 @@ class ResonanceProbe:
         self.deriv_sensitivity_axis = [
             config.getfloat('deriv_sensitivity_%s' % ax, None,
                             above=0., below=1.) for ax in 'xyz']
+        # DRAWDOWN halt test (analog_contact.ContactDetector), the third
+        # parallel detector.  Threshold is a FRACTION of the running reference
+        # and is derived from each descent's own air noise, so it needs no
+        # per-location config - see _HostResonanceEndstop.
+        self.drawdown_sensitivity = config.getfloat('drawdown_sensitivity',
+                                                    0.10, minval=0., below=1.)
+        self.drawdown_nsigma = config.getfloat('drawdown_nsigma', 8.,
+                                               minval=1.)
+        self.drawdown_lookback = config.getfloat('drawdown_lookback', 0.12,
+                                                 above=0.)
+        # Directory for automatic per-descent trace capture.  Every halting
+        # descent writes one CSV (amplitude per axis vs mm below arming) plus a
+        # metadata header, building a replay corpus.  Detector changes can then
+        # be evaluated offline against real descents instead of by probing
+        # again - which matters because probing WEARS the plate: a smooth PEI
+        # surface shows visible marking after a few hundred contacts, and a
+        # worn spot measurably changes both its noise floor and which axis
+        # carries the contact signal.
+        self.trace_dir = config.get('trace_dir', None)
         self.allow_z = config.getboolean('allow_z_vibration', False)
         # Parse the printer axis to vibrate (x/y/z or a dx,dy,dz vector)
         raw_axis = config.get('vibrate_axis', 'x')
@@ -1017,9 +1036,21 @@ class _HostResonanceEndstop:
         # this MUST short-circuit the per-axis derivation below - a threshold of
         # 0 would otherwise make "step <= -0" true on every window and halt the
         # descent immediately.
+        # A ratio floor at/above DISARM is the established "this axis must
+        # never trigger" sentinel (calibration parks unusable axes at 0.95, and
+        # CHARACTERIZE_NOISE sets 1.0 on every axis to guarantee a no-halt air
+        # descent).  The derivative and drawdown tests MUST honour it too, or
+        # they silently break that guarantee - observed on hardware: a
+        # "floors=1.0" air descent halted on drawdown anyway, truncating the
+        # very noise measurement it existed to collect.
+        DISARM = 0.95
+        self._disarmed = [self._halt_axis[i] >= DISARM
+                          for i in range(self.AXIS_COUNT)]
         self._deriv_axis = [None] * self.AXIS_COUNT
         if self._deriv_sens > 0.:
             for i in range(self.AXIS_COUNT):
+                if self._disarmed[i]:
+                    continue
                 if deriv_floor and deriv_floor[i] is not None:
                     self._deriv_axis[i] = deriv_floor[i]
                 else:
@@ -1029,6 +1060,18 @@ class _HostResonanceEndstop:
         # such windows in every trace, and a single-window rule would be one
         # noise excursion away from a false halt.
         self._deriv_persist = 2
+        # DRAWDOWN detectors (analog_contact), built lazily once enough air
+        # windows exist to measure this descent's own noise - see _handle_batch.
+        # Self-referencing on purpose: surface features wander (removable
+        # plates, and a worn spot migrates), so a stored per-location floor goes
+        # stale in a way a fresh per-descent estimate cannot.
+        self._dd_sens = getattr(rprobe, 'drawdown_sensitivity', 0.10)
+        self._dd_nsigma = getattr(rprobe, 'drawdown_nsigma', 8.)
+        self._dd_lookback = getattr(rprobe, 'drawdown_lookback', 0.12)
+        self._dd_det = [None] * self.AXIS_COUNT
+        self._dd_air = [[] for _ in range(self.AXIS_COUNT)]
+        self._dd_thresh = [None] * self.AXIS_COUNT
+        self._dd_warm = 40      # air windows used for the noise estimate
 
     def get_steppers(self):
         return self._steppers
@@ -1276,6 +1319,49 @@ class _HostResonanceEndstop:
                 # descents is not enough evidence to retire a working
                 # safety-critical path.  If the derivative keeps proving better,
                 # the ratio test (and its smoothing machinery) should go.
+                # DRAWDOWN trigger - third parallel path.  Fall from a running
+                # extreme (bounded lookback), which unlike the per-window step
+                # ACCUMULATES across windows, so it does not weaken when the
+                # event is spread over more samples.  Offline replay of 24
+                # axis-traces: fires 1-2 windows earlier than the derivative on
+                # x, and detects contact on z in four traces where the
+                # per-window rule found nothing, with no fire more than 2
+                # windows before the real halt.
+                val = float(amps[a_idx])
+                # Disarmed axes must not TRIGGER, but must still be MEASURED:
+                # _dbg_maxdrop below is what CHARACTERIZE_NOISE reads back to
+                # compute its air ceilings, so skipping the analysis outright
+                # would silently report zero noise on every axis.
+                det = None if self._disarmed[a_idx] else self._dd_det[a_idx]
+                if self._disarmed[a_idx]:
+                    pass
+                elif det is None:
+                    # Still measuring this descent's own air noise.  Cannot
+                    # trigger yet - which is correct, since the first windows
+                    # after the warmup gate are the ones most contaminated by
+                    # the excitation ringing up.
+                    air = self._dd_air[a_idx]
+                    air.append(val)
+                    if len(air) >= self._dd_warm:
+                        base = sum(air) / len(air)
+                        sd = (analog_contact.estimate_noise(air) / base
+                              if base > 1e-9 else 0.)
+                        thr = max(self._dd_sens, self._dd_nsigma * sd)
+                        self._dd_thresh[a_idx] = thr
+                        self._dd_det[a_idx] = analog_contact.ContactDetector(
+                            analog_contact.DRAWDOWN, thr,
+                            max(self._descend_speed, 1e-6),
+                            1. / max(self._step_z / max(self._descend_speed,
+                                                        1e-9), 1e-9),
+                            relative=True, persist_mm=2. * self._step_z,
+                            lookback_mm=self._dd_lookback)
+                elif det.update(val, position=float(tc)):
+                    self._trigger_time = float(tc)
+                    self._trigger_axis = a_idx
+                    self._trigger_kind = 'drawdown'
+                    self._done = True
+                    self._completion.complete(True)
+                    return False
                 prev = self._prev_amp[a_idx]
                 self._prev_amp[a_idx] = float(amps[a_idx])
                 thr = self._deriv_axis[a_idx]
@@ -2167,6 +2253,8 @@ class HaltingContactProbe:
         rp = self.printer.lookup_object('resonance_probe', None)
         if rp is not None:
             rp.last_trace = self.last_trace
+            self._autosave_trace(rp, endstop)
+
         _dbg(gcmd,
             "live-halt diag: max gradient drop x=%.0f%% y=%.0f%% z=%.0f%% over"
             " %d live windows (floor x=%.0f%% y=%.0f%% z=%.0f%%)"
@@ -2182,6 +2270,12 @@ class HaltingContactProbe:
             % (endstop._dbg_minstep[0] * 100., endstop._dbg_minstep[1] * 100.,
                endstop._dbg_minstep[2] * 100.,
                dfloor[0], dfloor[1], dfloor[2], endstop._trigger_kind))
+        ddt = ["%.0f%%" % (t * 100.) if t else "unset"
+               for t in endstop._dd_thresh]
+        _dbg(gcmd,
+            "live-halt diag: drawdown thresholds x=%s y=%s z=%s"
+            " (self-derived from this descent's air noise)"
+            % (ddt[0], ddt[1], ddt[2]))
         a0 = [(sum(v) / len(v)) if v else 0. for v in endstop._dbg_amp0]
         _dbg(gcmd,
             "live-halt diag: start-of-descent air amplitude x=%.0f y=%.0f z=%.0f"
@@ -2254,6 +2348,47 @@ class HaltingContactProbe:
     # the top before the first dip to contact - never started while touching.
     # Returns the lowest amplitude whose drop is cleanly detectable, with its
     # diagnostics (accel_per_hz, baseline, rel_noise, max_drop).
+
+    # Persist every descent to trace_dir, so detector changes can be replayed
+    # offline instead of re-probed.  Contacts are a consumable: the plate wears,
+    # and a worn spot changes both its noise floor and which axis detects.
+    def _autosave_trace(self, rp, endstop):
+        tdir = getattr(rp, 'trace_dir', None)
+        if not tdir or not self.last_trace:
+            return
+        try:
+            if not os.path.isdir(tdir):
+                os.makedirs(tdir)
+            # Sequence by what is already there - the host clock may be unset
+            # on a headless boot, and a collision would silently overwrite a
+            # descent we cannot re-create without wearing the plate again.
+            n = len([f for f in os.listdir(tdir) if f.endswith('.csv')])
+            path = os.path.join(tdir, "descent%05d.csv" % (n,))
+            with open(path, 'w') as fh:
+                # Metadata first: a trace is only replayable if the conditions
+                # that produced it are known.
+                fh.write("# freq=%.2f accel_per_hz=%.1f speed=%.4f\n"
+                         % (self.excitation_freq, self.accel_per_hz,
+                            endstop._descend_speed))
+                fh.write("# win_n=%s step_z=%.5f\n"
+                         % (endstop._win_n, endstop._step_z))
+                fh.write("# halt_floor=%s\n"
+                         % (",".join("%.4f" % v for v in endstop._halt_axis),))
+                fh.write("# deriv_floor=%s\n"
+                         % (",".join(("%.4f" % v) if v else "off"
+                                     for v in endstop._deriv_axis),))
+                fh.write("# drawdown_thresh=%s\n"
+                         % (",".join(("%.4f" % v) if v else "unset"
+                                     for v in endstop._dd_thresh),))
+                fh.write("# trigger_kind=%s trigger_axis=%s\n"
+                         % (endstop._trigger_kind, endstop._trigger_axis))
+                fh.write("mm_below_arm,amp_x,amp_y,amp_z\n")
+                for depth, ax, ay, az in self.last_trace:
+                    fh.write("%.5f,%.3f,%.3f,%.3f\n" % (depth, ax, ay, az))
+        except (IOError, OSError) as e:
+            # Diagnostics must never break probing.
+            logging.warning("resonance_probe: trace autosave failed: %s", e)
+
     def characterize_amplitude(self, gcmd, x0, y0, contact_z, lift_speed,
                                up_margin, down_margin,
                                cycles_per_level, n_levels, min_drop,
