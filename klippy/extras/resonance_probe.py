@@ -135,7 +135,15 @@ def _plain(obj):
 def _dft_amp(t, signal, freq):
     import numpy as np
     s = signal - signal.mean()
-    return 2.0 / len(s) * abs(np.sum(s * np.exp(-2j * np.pi * freq * t)))
+    # float(): this is the one place every amplitude leaves numpy.  A numpy
+    # amplitude propagates astonishingly far - the retune's parabolic peak
+    # interpolation turns it into a numpy FREQUENCY, which becomes segment
+    # accels and positions, then move times, then print_time, and finally the
+    # temperature callback's read_time; heaters.py then computes
+    # can_extrude = (smoothed_temp >= min_extrude_temp) as a numpy bool_, which
+    # is not JSON-serializable and SHUTS THE MCU DOWN the next time a client
+    # queries the extruder.  Diagnosed 2026-07-22 via RESONANCE_PROBE_AUDIT_STATUS.
+    return float(2.0 / len(s) * abs(np.sum(s * np.exp(-2j * np.pi * freq * t))))
 
 
 # Constant-frequency back-and-forth excitation as (end_time, accel, freq)
@@ -537,6 +545,10 @@ class ResonanceProbe:
     # Adopt a new excitation frequency, keeping the displacement default (which
     # depends on frequency) consistent unless probe_amplitude was set explicitly.
     def _set_excitation_freq(self, freq):
+        # float() at the STATE boundary too: this value outlives the call that
+        # produced it and seeds every later move, so it must not be numpy even
+        # if some future caller computes it differently (see _dft_amp).
+        freq = float(freq)
         self.excitation_freq = freq
         if self._amp_is_default:
             self.probe_amplitude = (self.accel_per_hz
@@ -1398,7 +1410,8 @@ class HaltingContactProbe:
     # to where the down-ramp amplitude crosses the air/contact midpoint (a
     # sharper datum than the live halt, which anchors a little high).  Returns
     # (air_amp, contact_amp, refined_z_or_None) on the driven axis.
-    def _verify_contact_moving(self, gcmd, x0, y0, z_cand, lift_speed):
+    def _verify_contact_moving(self, gcmd, x0, y0, z_cand, lift_speed,
+                               z_limit=None):
         import numpy as np
         toolhead = self.printer.lookup_object('toolhead')
         up = gcmd.get_float("VERIFY_UP", 0.15, above=0.)
@@ -1413,7 +1426,14 @@ class HaltingContactProbe:
         peakv = self._corrected_peakv()  # detuning-corrected reversal cruise
         half_dt = 0.5 / f
         z_hi = z_cand + up
+        # z_limit lets a caller forbid going below a floor TIGHTER than the
+        # hard z_min - the salvage path runs this at the descent floor, and
+        # without the clamp the ramp would press a further 'down' (0.25mm)
+        # BELOW the floor the descent was bounded by.  Observed on hardware:
+        # a salvage at floor -0.5 ramped toward -0.75.
         z_lo = max(self.z_min, z_cand - down)
+        if z_limit is not None:
+            z_lo = max(z_lo, z_limit)
         z_travel = max(z_hi - z_lo, 1e-3)
         dwell_t = gcmd.get_float("VERIFY_DWELL", 0.4, above=0.1)
         dwell_segs = max(4, int(round(dwell_t / half_dt)))
@@ -1506,7 +1526,7 @@ class HaltingContactProbe:
         if not gcmd.get_int("SALVAGE", 1):
             return None
         air_a, touch_a, refined = self._verify_contact_moving(
-            gcmd, x0, y0, z_floor, lift_speed)
+            gcmd, x0, y0, z_floor, lift_speed, z_limit=z_floor)
         drop = (air_a - touch_a) / air_a if air_a > 1e-9 else 0.
         if drop < thresh or refined is None:
             gcmd.respond_info(
