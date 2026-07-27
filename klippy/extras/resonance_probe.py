@@ -1411,10 +1411,12 @@ class HaltingContactProbe:
     # sharper datum than the live halt, which anchors a little high).  Returns
     # (air_amp, contact_amp, refined_z_or_None) on the driven axis.
     def _verify_contact_moving(self, gcmd, x0, y0, z_cand, lift_speed,
-                               z_limit=None):
+                               z_limit=None, up_override=None):
         import numpy as np
         toolhead = self.printer.lookup_object('toolhead')
         up = gcmd.get_float("VERIFY_UP", 0.15, above=0.)
+        if up_override is not None:
+            up = up_override
         down = gcmd.get_float("VERIFY_DOWN", 0.25, above=0.)
         reps = gcmd.get_int("VERIFY_REPS", 1, minval=1, maxval=4)
         ramp_speed = gcmd.get_float("VERIFY_RAMP_SPEED", 0.5, above=0.,
@@ -1525,8 +1527,22 @@ class HaltingContactProbe:
     def _salvage_on_rise(self, gcmd, x0, y0, z_floor, lift_speed, thresh):
         if not gcmd.get_int("SALVAGE", 1):
             return None
+        # NEVER PRESS FURTHER.  Reaching here means the descent already went
+        # too deep, so the recovery may only go UP: z_limit pins the bottom of
+        # the ramp at the floor we are already sitting on.
+        #
+        # And lift FAR enough that the top of the ramp is genuinely free air.
+        # The default 0.15mm reference is measured from the candidate, which
+        # here is the over-travelled floor - if the real surface is further
+        # above that than the reference height, both ends of the ramp are still
+        # pressed and the "drop" is only a press-DEPTH gradient, which says
+        # nothing about contact.  That is exactly what happened on hardware: a
+        # salvage at floor -0.53 reported -22% while the true surface was at
+        # ~-0.05, i.e. every sample was pressed.
+        up = gcmd.get_float("SALVAGE_UP", 0.8, above=0.2)
         air_a, touch_a, refined = self._verify_contact_moving(
-            gcmd, x0, y0, z_floor, lift_speed, z_limit=z_floor)
+            gcmd, x0, y0, z_floor, lift_speed, z_limit=z_floor,
+            up_override=up)
         drop = (air_a - touch_a) / air_a if air_a > 1e-9 else 0.
         if drop < thresh or refined is None:
             gcmd.respond_info(
