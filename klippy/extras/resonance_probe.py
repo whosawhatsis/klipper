@@ -48,6 +48,64 @@ def _sample_rate(times):
 # missed path.  Instead every value crossing OUT of this module (probe results,
 # status dicts, measurement dicts handed to the calibration module) goes through
 # here once.
+# --- halt-floor model -------------------------------------------------------
+#
+# One definition of "where the halt threshold goes", shared by the live
+# detector's per-axis floors, the amplitude-selection headroom score and the
+# mode ranking.  These three used to carry their own copies of the same
+# arithmetic, which is how accel_axis once ended up naming a different axis
+# than the floors actually armed.
+#
+# A workable floor must sit ABOVE the axis's own noise (or it triggers on
+# nothing) and BELOW the contact drop (or it never triggers at all), so the
+# usable window is (lo, hi).  Where inside that window to sit is a real
+# trade-off, and it is NOT symmetric:
+#
+#   * too low  -> false halt.  Recoverable: the verify pass rejects it,
+#     re-arms strictly below, and retries.  Costs seconds.
+#   * too high -> NO halt.  The descent runs to the safety floor, which means
+#     the nozzle presses into the bed for the whole remaining travel.  That is
+#     the dangerous failure, and it aborts the probe.
+#
+# So bias toward sensitivity: sit a short way up from the noise bound rather
+# than in the middle.  BIAS is that position, 0 = hard against the noise, 1 =
+# hard against the drop.
+HALT_NOISE_FACTOR = 1.15      # multiple of measured noise the floor must clear
+HALT_NOISE_MARGIN = 0.015     # plus a small absolute margin (fraction of 1)
+# The stationary characterization OVERSTATES what the live descent sees: the
+# excitation cannot fully ring down in the ~0.1mm below contact, so a 21%
+# dwell drop reaches the live detector as 8-12%.  DROP_FRACTION is therefore
+# not a safety margin - it is the estimate of that live drop, ~half.  Lowering
+# it does NOT buy sensitivity; it shrinks the window and starts rejecting modes
+# that work (0.35 rejected the 57.8Hz/z mode that measured best on hardware).
+# Sensitivity comes from BIAS, the position inside the window.
+HALT_DROP_FRACTION = 0.5
+HALT_SENSITIVITY_BIAS = 0.15  # position in the usable window (low = sensitive)
+
+
+def _halt_window(noise, drop):
+    """(lo, hi) bounds of the floors that both reject noise and catch contact."""
+    return (noise * HALT_NOISE_FACTOR + HALT_NOISE_MARGIN,
+            HALT_DROP_FRACTION * drop)
+
+
+def _halt_headroom(drop, noise):
+    """Width of that window: how much room exists to place a working floor.
+
+    <= 0 means no threshold can do both jobs, i.e. this axis/amplitude/mode
+    cannot detect contact reliably however it is tuned."""
+    lo, hi = _halt_window(noise, drop)
+    return hi - lo
+
+
+def _halt_floor(drop, noise):
+    """The floor itself, or None when the window is empty."""
+    lo, hi = _halt_window(noise, drop)
+    if hi <= lo:
+        return None
+    return lo + HALT_SENSITIVITY_BIAS * (hi - lo)
+
+
 def _plain(obj):
     item = getattr(obj, 'item', None)          # numpy scalar -> Python scalar
     if item is not None and getattr(obj, 'ndim', None) == 0:
@@ -1413,6 +1471,44 @@ class HaltingContactProbe:
                     break
         return air_amp, contact_amp, refined
 
+    # A descent that reached the floor without halting is NOT proof that the
+    # bed was never touched.  The nozzle may be pressed against it right now,
+    # with the detector simply having missed the transition (a drop diluted by
+    # ring-down, a floor set slightly high, or contact arriving before enough
+    # above-contact history existed to measure a gradient).
+    #
+    # Pressed contact is a STATE, not an event, so it is still measurable after
+    # the fact: lift back up and watch the amplitude RISE as the nozzle
+    # releases.  That is exactly the up/down ramp the halt verifier already
+    # performs, so run that at the floor and reuse its interpolated crossing as
+    # the contact Z.
+    #
+    # If the bed genuinely is not reachable, both ends of the ramp read air,
+    # the drop is ~0, and this reports failure - which is a real hardware or
+    # Z-offset problem for the user to fix, not something to paper over.
+    def _salvage_on_rise(self, gcmd, x0, y0, z_floor, lift_speed, thresh):
+        if not gcmd.get_int("SALVAGE", 1):
+            return None
+        air_a, touch_a, refined = self._verify_contact_moving(
+            gcmd, x0, y0, z_floor, lift_speed)
+        drop = (air_a - touch_a) / air_a if air_a > 1e-9 else 0.
+        if drop < thresh or refined is None:
+            gcmd.respond_info(
+                "salvage: no contact at the floor either (air=%.0f pressed="
+                "%.0f, %.0f%% < %.0f%%) - the bed is genuinely out of reach"
+                " from this start height; check the Z endstop offset,"
+                " probe_start_z or probe_distance"
+                % (air_a, touch_a, drop * 100., thresh * 100.))
+            return None
+        gcmd.respond_info(
+            "salvage: the descent missed its halt but the nozzle IS on the bed"
+            " (air=%.0f pressed=%.0f, -%.0f%%) - recovered contact z=%.4f from"
+            " the release ramp.  It over-pressed by %.3fmm getting there;"
+            " lower halt_sensitivity_%s if this repeats."
+            % (air_a, touch_a, drop * 100., refined,
+               max(0., refined - z_floor), 'xyz'[self.output_index]))
+        return refined
+
     # Public entry: a VERIFIED contact touch.  Each live halt is only a
     # candidate - confirm it with a static up/down amplitude test, and on a
     # rejected false halt restart the descent with the ceiling lowered below the
@@ -1443,6 +1539,12 @@ class HaltingContactProbe:
                 gcmd, cur_ceiling, cur_ceiling - z_floor, descend_speed,
                 lift_speed, start_speed, x0, y0, vib_span, drip_time)
             if not halted or contact_z is None:
+                # Missed the halt - try to recover it on the way back up before
+                # giving up (see _salvage_on_rise).
+                z_sal = self._salvage_on_rise(gcmd, x0, y0, z_floor,
+                                              lift_speed, thresh)
+                if z_sal is not None:
+                    return z_sal, True
                 return contact_z, halted
             if gcmd.get_int("VERIFY_MOVING", 1):
                 air_a, touch_a, refined = self._verify_contact_moving(
@@ -2069,7 +2171,8 @@ class HaltingContactProbe:
                              " drop; check the start height/floor")
 
         def headroom(i):
-            return 0.5 * results[i][2] - (results[i][3] * 1.3 + 0.03)
+            # Shared model - see _halt_headroom().
+            return _halt_headroom(results[i][2], results[i][3])
         # Hard noise cap on top of the clean test.  The derived sensitivity and
         # halt thresholds come from the CHOSEN level's numbers, so letting a
         # noisy level win drags them with it - the run that picked a 3.8%-noise
@@ -2092,7 +2195,7 @@ class HaltingContactProbe:
                 " noise<=%.1f%%; using the best available headroom"
                 % (min_drop * 100., target_noise * 100.))
         gcmd.respond_info(
-            "Calibrate: amplitude by live headroom (0.5*drop - noise*1.3 - 3pp):"
+            "Calibrate: amplitude by live headroom (usable halt-floor window):"
             " %s -> accel_per_hz=%.0f (headroom %.1fpp)"
             % (", ".join("%.0f:%.1fpp" % (results[i][0], headroom(i) * 100.)
                          for i in valid),
