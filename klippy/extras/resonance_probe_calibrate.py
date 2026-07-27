@@ -89,6 +89,9 @@ class ResonanceProbeCalibrate:
         self.gcode.register_command(
                 "RESONANCE_PROBE_ZNOISE", self.cmd_ZNOISE,
                 desc=self.cmd_ZNOISE_help)
+        self.gcode.register_command(
+                "RESONANCE_PROBE_DUMP_TRACE", self.cmd_DUMP_TRACE,
+                desc=self.cmd_DUMP_TRACE_help)
 
     # -- helpers -----------------------------------------------------------
 
@@ -1421,6 +1424,29 @@ class ResonanceProbeCalibrate:
     # traceback cannot tell you.  Read-only: no motion, safe at any time.
     cmd_AUDIT_STATUS_help = ("Report any printer status value that would crash"
                              " Klipper's JSON/webhook layer (e.g. numpy)")
+    cmd_DUMP_TRACE_help = (
+        "Write the LAST probing descent's per-window amplitude trace (all three"
+        " accelerometer axes vs mm below the arming height) to a CSV, for"
+        " offline analysis of what the live detector actually saw.")
+
+    def cmd_DUMP_TRACE(self, gcmd):
+        rp = self.printer.lookup_object('resonance_probe', None)
+        trace = getattr(rp, 'last_trace', None) if rp is not None else None
+        if not trace:
+            raise gcmd.error("No descent trace recorded - run a PROBE first"
+                             " (the trace is captured during the halting"
+                             " descent, and only the newest one is kept)")
+        path = gcmd.get("FILE")
+        try:
+            with open(path, 'w') as fh:
+                fh.write("mm_below_arm,amp_x,amp_y,amp_z\n")
+                for depth, ax, ay, az in trace:
+                    fh.write("%.5f,%.3f,%.3f,%.3f\n" % (depth, ax, ay, az))
+        except IOError as e:
+            raise gcmd.error("Could not write %s: %s" % (path, e))
+        gcmd.respond_info("Wrote %d descent windows to %s"
+                          % (len(trace), path))
+
     def cmd_AUDIT_STATUS(self, gcmd):
         import json
         reactor = self.printer.get_reactor()

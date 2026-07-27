@@ -932,6 +932,16 @@ class _HostResonanceEndstop:
         # this falls off as descend_speed rises, the descent is detuning the
         # oscillation rather than the detector missing the crater.
         self._dbg_amp0 = [[] for _ in range(self.AXIS_COUNT)]
+        # Full per-window amplitude trace of the descent, all axes, for offline
+        # analysis (RESONANCE_PROBE_DUMP_TRACE).  The gradient test reduces each
+        # window to one number and throws the shape away, which is exactly what
+        # is needed to tell "no signal on this axis" from "a signal the ratio
+        # test cannot express" - e.g. a steady slope with a KNEE at contact
+        # rather than a step.  Appending a 4-tuple per window is cheap enough
+        # for the callback (a couple hundred windows per descent); everything
+        # expensive - reconstructing Z, differentiating, writing a file -
+        # happens after the descent, never in here.
+        self._trace = []
         self._dbg_win_z = 0.   # Z span one DFT window averages over (see below)
         # Window sized lazily from the measured sample rate (first batches).
         # The window is a fixed time; the step is a fixed Z distance (so the
@@ -1132,6 +1142,8 @@ class _HostResonanceEndstop:
             cols = arr[:, 1:1 + self.AXIS_COUNT]
             cols = cols - cols.mean(axis=0)
             amps = 2. / len(t) * np.abs(np.sum(cols * ref[:, None], axis=0))
+            self._trace.append((float(tc), float(amps[0]), float(amps[1]),
+                                float(amps[2])))
             for a_idx in range(self.AXIS_COUNT):
                 # GRADIENT contact: append this window's amplitude to a short
                 # rolling history, then compare a smoothed CURRENT level to a
@@ -1974,6 +1986,19 @@ class HaltingContactProbe:
         # descent-noise ceiling (see RESONANCE_PROBE_CHARACTERIZE_NOISE).
         self.last_maxdrop = [float(endstop._dbg_maxdrop[a])
                              for a in range(endstop.AXIS_COUNT)]
+        # Keep the last descent's trace as (mm-below-arm, ax, ay, az).  Depth is
+        # reconstructed the same way the "max drop at mm-below-arm" line does
+        # it: the descent is a constant-speed drip from _armed_time, so
+        # depth = (t - armed) * descend_speed.  Only the newest descent is kept
+        # (PROBE_ACCURACY runs several); dump it before running another.
+        # Publish on the REGISTERED printer object, not on this per-descent
+        # helper - RESONANCE_PROBE_DUMP_TRACE can only reach the former.
+        self.last_trace = [
+            ((t - endstop._armed_time) * endstop._descend_speed, ax, ay, az)
+            for (t, ax, ay, az) in endstop._trace]
+        rp = self.printer.lookup_object('resonance_probe', None)
+        if rp is not None:
+            rp.last_trace = self.last_trace
         _dbg(gcmd,
             "live-halt diag: max gradient drop x=%.0f%% y=%.0f%% z=%.0f%% over"
             " %d live windows (floor x=%.0f%% y=%.0f%% z=%.0f%%)"
