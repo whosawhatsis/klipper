@@ -2085,16 +2085,22 @@ class HaltingContactProbe:
         # never started while touching the bed.  The contact dwell is kept short
         # (bed/nozzle wear) since the moving ramp is the probe-relevant metric.
         dwell_t = gcmd.get_float("CONTACT_DWELL", 0.35, above=0.1)
-        # Ramp at the speed the probe actually descends at.  Two reasons, both
-        # discovered the hard way.  (1) Resolution: one analysis window spans
-        # detect_cycles/f seconds, which at 1.0mm/s is ~0.054mm of travel -
-        # more than twice the LIVE_WIN_Z onset band, so the onset drop cannot
-        # be resolved at all and every mode reads as no-signal.  (2) Physics:
-        # ring-down dilution scales with descent speed, so a ramp faster than
-        # the real descent measures damping under conditions the probe never
-        # meets.  0.3mm/s is this machine's ring-down ceiling; the extra ~2.6s
-        # per level is nothing against a one-time calibration.
-        ramp_speed = gcmd.get_float("CONTACT_RAMP_SPEED", 0.3, above=0.,
+        # DO NOT lower this default without fixing the segment budget first.
+        # Resolution and MCU safety pull in opposite directions here:
+        #   - Matching the live descent wants a SLOW ramp.  One analysis window
+        #     spans detect_cycles/f seconds, so at 1.0mm/s it covers ~0.054mm
+        #     of Z - wider than the LIVE_WIN_Z onset band, which is why the
+        #     moving numbers are smeared across the surface (the warning below
+        #     says so explicitly).
+        #   - But segments-per-ramp is (z_travel/speed)/(0.5/f), so halving the
+        #     speed doubles them.  Dropping 1.0 -> 0.3mm/s took 212Hz from ~59
+        #     segments per ramp to ~198 and shut the MCU down with "Timer too
+        #     close" - measured, not theoretical.
+        # The fix is to shrink the ramp's Z span (fewer segments at the same
+        # speed), not to slow it down at the current span.  Until then, keep
+        # the ramp fast enough to be safe and treat the moving figures as
+        # smeared.
+        ramp_speed = gcmd.get_float("CONTACT_RAMP_SPEED", 1.0, above=0.,
                                     maxval=10.)
         # Same MCU step-buffer overrun protection as the halting descent (see
         # HaltingContactProbe.run) - a bounded oscillation at high excitation
