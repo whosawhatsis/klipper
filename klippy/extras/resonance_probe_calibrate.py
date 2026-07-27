@@ -600,6 +600,32 @@ class ResonanceProbeCalibrate:
     # Z.  The loudest in-air mode may not detect best; this picks the mode the
     # probe should actually use.  Returns [(freq, drop, noise, snr), ...] best
     # first, plus the chosen (best) frequency.
+    # Detection-window parameters for calibration descents.
+    #
+    # These were seven copies of the literal "5., 0.01, 0.05, 0." - i.e.
+    # calibration characterised every mode through a 5-cycle window with a
+    # 0.01mm step, regardless of what the LIVE probe is configured to use
+    # (detect_cycles is 8 on the development machine).  A window spans
+    # detect_cycles/freq * speed in Z, so calibration was measuring modes under
+    # conditions the probe never actually meets - one more reason its rankings
+    # disagreed with live behaviour.  It also silently defeated an attempt to
+    # equalise the window hop across descent speeds, since the config value was
+    # simply ignored.
+    #
+    # Defaults reproduce the previous hardcoded values exactly, so behaviour is
+    # unchanged until someone opts in.  CAL_MATCH_LIVE=1 takes them from the
+    # live probe config instead, which is the comparison worth running:
+    # characterise under the same window the halt will use.
+    def _detect_params(self, gcmd):
+        rp = self.printer.lookup_object('resonance_probe', None)
+        if rp is not None and gcmd.get_int("CAL_MATCH_LIVE", 0):
+            return (float(rp.detect_cycles), float(rp.detect_step_z),
+                    float(rp.detect_confirm_z), float(rp.detect_offset_frac))
+        return (gcmd.get_float("CAL_CYCLES", 5., above=1.),
+                gcmd.get_float("CAL_STEP_Z", 0.01, above=0.),
+                gcmd.get_float("CAL_CONFIRM_Z", 0.05, above=0.),
+                gcmd.get_float("CAL_OFFSET_FRAC", 0.))
+
     def _rank_modes_by_damping(self, gcmd, chip, accel_axis, candidates,
                                contact_z, x0, y0, cap, z_min, warmup, lift,
                                up_margin, down_margin, cycles,
@@ -611,7 +637,7 @@ class ResonanceProbeCalibrate:
             amp = cap / (4. * math.pi**2 * fq)
             helper = HaltingContactProbe(
                 self.printer, chip, out_idx, axis, fq, cap, amp, z_min,
-                warmup, 0.06, 0.15, 5., 0.01, 0.05, 0.)
+                warmup, 0.06, 0.15, *self._detect_params(gcmd))
             # A single candidate's characterization can fail outright (e.g. no
             # axis got even one valid air/contact window - too few samples at
             # a very high frequency, or the accelerometer saw nothing usable)
@@ -825,7 +851,7 @@ class ResonanceProbeCalibrate:
         for attempt in range(false_halt_retries + 1):
             helper = HaltingContactProbe(
                 self.printer, chip, out_idx, axis, freq, cap, amp, z_min,
-                warmup, cal_sens, cal_halt, 5., 0.01, 0.05, 0.,
+                warmup, cal_sens, cal_halt, *self._detect_params(gcmd),
                 halt_sensitivity_axis=floors)
             contact_z, halted = helper.run(gcmd, ceiling, distance, speed,
                                            lift, lift, x0, y0,
@@ -1081,7 +1107,7 @@ class ResonanceProbeCalibrate:
         drip_time = gcmd.get_float("DRIP_TIME", 0.3, minval=0.) or None
         helper = HaltingContactProbe(
             self.printer, chip, out_idx, axis, freq, accel_per_hz, amp, z_min,
-            warmup, sensitivity, halt_sens, 5., 0.01, 0.05, 0.,
+            warmup, sensitivity, halt_sens, *self._detect_params(gcmd),
             halt_sensitivity_axis=halt_axis)
         toolhead = self.printer.lookup_object('toolhead')
         x, y, ceiling = toolhead.get_position()[:3]
@@ -1213,7 +1239,7 @@ class ResonanceProbeCalibrate:
         amp = accel_per_hz / (4. * math.pi**2 * freq)
         helper = HaltingContactProbe(
             self.printer, chip, out_idx, axis, freq, accel_per_hz, amp,
-            air_floor, warmup, 0.10, 0.5, 5., 0.01, 0.05, 0.,
+            air_floor, warmup, 0.10, 0.5, *self._detect_params(gcmd),
             halt_sensitivity_axis=[1., 1., 1.])
         toolhead = self.printer.lookup_object('toolhead')
         lift = min(self.move_speed, 10.)
@@ -1354,7 +1380,7 @@ class ResonanceProbeCalibrate:
                    ceils[2] * 100.))
             finder = HaltingContactProbe(
                 self.printer, chip, out_idx, axis, finder_f, cap, amp, z_min,
-                warmup, 0.06, 0.15, 5., 0.01, 0.05, 0.,
+                warmup, 0.06, 0.15, *self._detect_params(gcmd),
                 halt_sensitivity_axis=floors)
             for attempt in range(3):
                 attempts += 1
@@ -1914,7 +1940,7 @@ class ResonanceProbeCalibrate:
             for attempt in range(3):
                 finder = HaltingContactProbe(
                     self.printer, chip, out_idx, axis, finder_f, f_aph,
-                    f_amp, z_min, warmup, 0.06, 0.15, 5., 0.01, 0.05, 0.,
+                    f_amp, z_min, warmup, 0.06, 0.15, *self._detect_params(gcmd),
                     halt_sensitivity_axis=floors)
                 contact_z, _halted = finder.run(gcmd, cur_ceiling, distance,
                                                 speed, lift, start_speed,
@@ -1939,7 +1965,7 @@ class ResonanceProbeCalibrate:
                     h_aph, h_amp = self._excite_params(fq, cap, excite_amp)
                     helper = HaltingContactProbe(
                         self.printer, chip, out_idx, axis, fq, h_aph,
-                        h_amp, z_min, warmup, 0.06, 0.15, 5., 0.01, 0.05, 0.)
+                        h_amp, z_min, warmup, 0.06, 0.15, *self._detect_params(gcmd))
                     # Sweep amplitudes per candidate and rank by live headroom,
                     # exactly as the RANK_FREQ finder does - see its comment.
                     m = helper.characterize_amplitude(
