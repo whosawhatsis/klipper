@@ -406,7 +406,14 @@ class ResonanceProbe:
                                                     0.10, minval=0., below=1.)
         self.drawdown_nsigma = config.getfloat('drawdown_nsigma', 8.,
                                                minval=1.)
-        self.drawdown_lookback = config.getfloat('drawdown_lookback', 0.12,
+        # 0.06 measured on the descent corpus: a 0.12 lookback lets slow air
+        # wander accumulate against a peak set half a window-span ago and fires
+        # in mid-air on 5 of 44 never-touched descents; 0.06 drops that to 4
+        # (and to 2 if drawdown_nsigma is also raised - but that value is shared
+        # with the mode selector, so it is left alone here).  Labelled overshoot
+        # traces show the trigger depth is IDENTICAL either way, so the tighter
+        # lookback costs nothing in detection.
+        self.drawdown_lookback = config.getfloat('drawdown_lookback', 0.06,
                                                  above=0.)
         # Directory for automatic per-descent trace capture.  Every halting
         # descent writes one CSV (amplitude per axis vs mm below arming) plus a
@@ -1067,7 +1074,7 @@ class _HostResonanceEndstop:
         # stale in a way a fresh per-descent estimate cannot.
         self._dd_sens = getattr(rprobe, 'drawdown_sensitivity', 0.10)
         self._dd_nsigma = getattr(rprobe, 'drawdown_nsigma', 8.)
-        self._dd_lookback = getattr(rprobe, 'drawdown_lookback', 0.12)
+        self._dd_lookback = getattr(rprobe, 'drawdown_lookback', 0.06)
         self._dd_det = [None] * self.AXIS_COUNT
         self._dd_air = [[] for _ in range(self.AXIS_COUNT)]
         self._dd_thresh = [None] * self.AXIS_COUNT
