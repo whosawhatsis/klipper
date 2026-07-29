@@ -415,6 +415,18 @@ class ResonanceProbe:
         # lookback costs nothing in detection.
         self.drawdown_lookback = config.getfloat('drawdown_lookback', 0.06,
                                                  above=0.)
+        # Verify/refine sampling.  Each rep is one down ramp plus one up ramp
+        # through the candidate contact, and each ramp now yields its OWN
+        # estimate, so reps buy independent datapoints (and a measurable
+        # up-vs-down bias) rather than a longer pooled sample.  Costs time:
+        # roughly one ramp pair per rep at VERIFY_RAMP_SPEED.
+        self.verify_reps = config.getint('verify_reps', 1, minval=1, maxval=10)
+        # 1 = report the mean of the down and up estimates (default; measured
+        # best, and it cancels the positional up/down bias).  0 = down ramp
+        # only, which is what this did before the up ramp was analysed at all -
+        # kept for A/B, not because it is better.
+        self.verify_combine = config.getint('verify_combine', 1, minval=0,
+                                            maxval=1)
         # Directory for automatic per-descent trace capture.  Every halting
         # descent writes one CSV (amplitude per axis vs mm below arming) plus a
         # metadata header, building a replay corpus.  Detector changes can then
@@ -1469,6 +1481,13 @@ class HaltingContactProbe:
         rp = printer.lookup_object('resonance_probe', None)
         self._sel_floor = getattr(rp, 'drawdown_sensitivity', 0.10) or 0.10
         self._sel_nsigma = getattr(rp, 'drawdown_nsigma', 8.) or 8.
+        # Verify/refine sampling.  Each rep contributes an independent DOWN and
+        # UP estimate, so raising this trades time for datapoints - both for a
+        # better refined Z and for measuring the up/down bias.
+        self._verify_reps = getattr(rp, 'verify_reps', 1) or 1
+        self._verify_combine = getattr(rp, 'verify_combine', 1)
+        # Per-direction detail from the last verify, for reporting.
+        self._verify_detail = {}
         self._descend_speed = 1.
         self._z_steppers = None
         # Timing-corrected reversal cruise velocity, installed by run() for the
@@ -1683,7 +1702,8 @@ class HaltingContactProbe:
         if up_override is not None:
             up = up_override
         down = gcmd.get_float("VERIFY_DOWN", 0.25, above=0.)
-        reps = gcmd.get_int("VERIFY_REPS", 1, minval=1, maxval=4)
+        reps = gcmd.get_int("VERIFY_REPS", self._verify_reps, minval=1,
+                            maxval=10)
         ramp_speed = gcmd.get_float("VERIFY_RAMP_SPEED", 0.5, above=0.,
                                     maxval=5.)
         f = self.excitation_freq
@@ -1709,19 +1729,26 @@ class HaltingContactProbe:
         warm_segs = max(4, int(round(self.warmup / half_dt)))
         segs = []
         tags = []
+        rep_ids = []
         sign = [1.]
+        cur_rep = [-1]
         def emit(z, tag):
             disp = amp if sign[0] > 0 else -amp
             segs.append(([x0 + vdir[0] * disp, y0 + vdir[1] * disp, z],
                          peakv, accel))
             tags.append(tag)
+            # Which rep a ramp belongs to.  Each ramp must be estimated on its
+            # own: pooling them and sorting by Z interleaves reps and computes
+            # steps across a rep boundary, which is noise, not signal.
+            rep_ids.append(cur_rep[0])
             sign[0] = -sign[0]
         # Ring up in air (never started while touching), then ramp through.
         toolhead.manual_move([x0, y0, z_hi], lift_speed)
         toolhead.wait_moves()
         for _ in range(warm_segs):
             emit(z_hi, 'warm')
-        for _ in range(reps):
+        for r in range(reps):
+            cur_rep[0] = r
             for s in range(ramp_segs):
                 emit(z_hi - z_travel * (s + 1) / ramp_segs, 'down')
             for _ in range(dwell_segs):
@@ -1730,8 +1757,19 @@ class HaltingContactProbe:
                 emit(z_lo + z_travel * (s + 1) / ramp_segs, 'up')
             for _ in range(dwell_segs):
                 emit(z_hi, 'air')
+        cur_rep[0] = -1
+        # NOTE: this trailing centering segment does not go through emit(), so
+        # every parallel array must be appended to by hand.  Missing rep_ids
+        # here desynced it by one and the window index ran off the end mid-probe
+        # - an IndexError inside the probe shuts the PRINTER down, so these are
+        # checked rather than trusted.
         segs.append(([x0, y0, z_hi], peakv, accel))
         tags.append('air')
+        rep_ids.append(-1)
+        if not (len(segs) == len(tags) == len(rep_ids)):
+            raise gcmd.error("verify: segment bookkeeping desync"
+                             " (segs=%d tags=%d reps=%d)"
+                             % (len(segs), len(tags), len(rep_ids)))
         samples, seg_times, _ = self._run_bounded_vibration(
             gcmd, segs, f, ramp_speed, peakv + ramp_speed + 1., accel + 1.)
         toolhead.manual_move([x0, y0, z_hi], lift_speed)
@@ -1750,63 +1788,192 @@ class HaltingContactProbe:
                                           max(1, win_n // 2), seg_end)
         wtag = tag_arr[wk]
         wz = zc[wk]
+        wrep = np.asarray(rep_ids)[wk]
         air = wamp[wtag == 'air']
         contact = wamp[wtag == 'contact']
         if len(air) < 2 or len(contact) < 1:
             return 0., 0., None
         air_amp = float(np.median(air))
         contact_amp = float(np.median(contact))
-        # Refine: walk the DOWN ramp from high Z to low Z and find where the
-        # amplitude first crosses the air/contact midpoint (linear-interpolated).
-        refined = None
+        # Refine.  Every ramp is estimated separately - each rep gives one DOWN
+        # and one UP datapoint - so more reps mean more independent estimates
+        # instead of a longer pooled list, and so any systematic difference
+        # between pressing in and releasing (ring-down, Z backlash, or the press
+        # needed before the resonance damps at all) is measurable rather than
+        # averaged away unseen.
+        down_edges, up_edges = [], []
         step_snr = 0.
-        dmask = wtag == 'down'
-        if dmask.sum() >= 3:
-            dz = wz[dmask]
-            da = wamp[dmask]
-            order = np.argsort(-dz)          # descending Z (matches the ramp)
-            dz = dz[order]
-            da = da[order]
-            # DERIVATIVE check, same principle as the live halt test: contact is
-            # a STEP, and a step is far better separated from air than a ratio
-            # of medians is.  The ramp here is slow enough to resolve it - at
-            # VERIFY_RAMP_SPEED 0.5mm/s a window spans ~0.027mm against a
-            # ~0.030mm event, where the calibration sweep at 1.0mm/s cannot.
-            #
-            # This matters because verify is the last line of defence: it is
-            # what rejected a false halt 660um above the bed.  A ratio of
-            # medians over a short ramp can read a real touch as marginal
-            # (that is exactly why VERIFY_DROP had to drop from 15% to 5% on
-            # this machine); a step test does not have that dilution problem.
-            steps = (da[1:] - da[:-1]) / np.maximum(da[:-1], 1e-9)
-            if len(steps) >= 3:
-                # Noise from the shallowest half of the ramp (still air); the
-                # contact step is the most negative anywhere along it.
-                air_steps = steps[:max(2, len(steps) // 2)]
-                sd = float(np.std(air_steps))
-                worst = float(np.min(steps))
-                if sd > 1e-6 and worst < 0.:
-                    step_snr = abs(worst) / sd
-                # The steepest step IS the contact edge, and it localises the
-                # transition better than the air/contact midpoint crossing when
-                # the two levels are close.  Take the midpoint of the window
-                # pair that straddles it.
-                j = int(np.argmin(steps))
-                if worst < 0.:
-                    refined = float(0.5 * (dz[j] + dz[j + 1]))
-            if air_amp > contact_amp:
-                mid = 0.5 * (air_amp + contact_amp)
-                for j in range(1, len(da)):
-                    if da[j - 1] >= mid >= da[j]:
-                        frac = (da[j - 1] - mid) / max(da[j - 1] - da[j], 1e-9)
-                        # Prefer the ratio crossing when it exists: it is the
-                        # long-standing, well-tested estimator.  The step-based
-                        # edge above is the fallback for the case it cannot
-                        # handle (levels too close for a midpoint to be
-                        # crossed cleanly).
-                        refined = float(dz[j - 1] + (dz[j] - dz[j - 1]) * frac)
-                        break
+        for r in range(reps):
+            for tag, bucket in (('down', down_edges), ('up', up_edges)):
+                m = (wtag == tag) & (wrep == r)
+                if int(m.sum()) < 3:
+                    continue
+                edge, snr = self._ramp_edge(wz[m], wamp[m], tag == 'down',
+                                            air_amp, contact_amp)
+                if edge is not None:
+                    bucket.append(edge)
+                if tag == 'down':
+                    step_snr = max(step_snr, snr)
+        # MEAN, not median.  Measured over 26 probes: the mean beats the median
+        # at every level (down 2.63 vs 2.97um, up 2.88 vs 2.96, all 2.34 vs
+        # 2.46), and it beats it EVEN THOUGH one down ramp in three is a ~12um
+        # outlier that the median correctly rejects.  With 4 ramps a median is
+        # the average of the middle two, so it throws away half the samples; the
+        # sqrt(n) gain from averaging them all is worth more than the outlier
+        # costs.  A median would only win if the outliers were rarer or bigger.
+        def _agg(vals):
+            return float(sum(vals) / len(vals)) if vals else None
+        def _spread(vals):
+            return (max(vals) - min(vals)) if len(vals) > 1 else 0.
+        r_down, r_up = _agg(down_edges), _agg(up_edges)
+        bias = (r_up - r_down) if (r_down is not None
+                                   and r_up is not None) else None
+        # Averaging BOTH directions is the default (VERIFY_COMBINE=0 restores
+        # the down-only answer for A/B).  Two reasons, both measured:
+        #  - repeatability: 2.34um vs 2.92um for down-only, pooled within-point
+        #    over 26 probes, and the mean-of-both won on every run tried.
+        #  - the up/down bias is POSITIONAL, not a machine constant: +1..+2um at
+        #    one point, +15..+20um at another, and it has been seen negative.
+        #    Reporting one direction alone inherits that positional error;
+        #    averaging the two cancels it by construction, which matters more
+        #    than the sd difference.
+        combine = gcmd.get_int("VERIFY_COMBINE", self._verify_combine,
+                               minval=0, maxval=1)
+        if combine and bias is not None:
+            refined = 0.5 * (r_down + r_up)
+        else:
+            refined = r_down if r_down is not None else r_up
+        self._verify_detail = {
+            'down': r_down, 'up': r_up, 'bias': bias, 'reps': reps,
+            'down_n': len(down_edges), 'up_n': len(up_edges),
+            'down_spread': _spread(down_edges), 'up_spread': _spread(up_edges),
+            'combined': bool(combine and bias is not None),
+        }
+        # Save the ramp windows.  Which estimator to report (down / up / their
+        # mean) is an open question, and it is decidable OFFLINE from one set of
+        # probes instead of one hardware run per candidate - but only if the
+        # per-ramp windows are kept.  The descent autosave does not cover this
+        # path: it saves the drip descent, which ends at the halt.
+        self._autosave_verify(wz, wamp, wtag, wrep, air_amp, contact_amp,
+                              z_cand, reps, ramp_speed)
         return air_amp, contact_amp, refined, step_snr
+
+    def _autosave_verify(self, wz, wamp, wtag, wrep, air_amp, contact_amp,
+                         z_cand, reps, ramp_speed):
+        rp = self.printer.lookup_object('resonance_probe', None)
+        tdir = getattr(rp, 'trace_dir', None)
+        if not tdir or not len(wz):
+            return
+        try:
+            if not os.path.isdir(tdir):
+                os.makedirs(tdir)
+            # Named apart from descent traces: the two have different columns
+            # and different meanings, and the replay tooling keys on filename.
+            n = len([f for f in os.listdir(tdir) if f.startswith('verify')])
+            path = os.path.join(tdir, "verify%05d.csv" % (n,))
+            with open(path, 'w') as fh:
+                fh.write("# freq=%.2f accel_per_hz=%.1f ramp_speed=%.4f\n"
+                         % (self.excitation_freq, self.accel_per_hz,
+                            ramp_speed))
+                fh.write("# z_cand=%.5f reps=%d\n" % (z_cand, reps))
+                fh.write("# air_amp=%.3f contact_amp=%.3f\n"
+                         % (air_amp, contact_amp))
+                fh.write("z,amp,tag,rep\n")
+                for z, a, t, r in zip(wz, wamp, wtag, wrep):
+                    fh.write("%.5f,%.3f,%s,%d\n" % (z, a, t, r))
+            # The CONFIRMED/REJECTED verdict is not known here - it is decided
+            # by the caller from the drop and the threshold - so the outcome is
+            # appended afterwards rather than duplicating that logic.
+            self._last_verify_path = path
+        except (IOError, OSError) as e:
+            # Diagnostics must never break probing.
+            logging.warning("resonance_probe: verify trace autosave failed: %s",
+                            e)
+
+    # Tag the verify trace just written with how it was judged.  A REJECTED
+    # trace is not junk: it is a recording of the signal around a false halt,
+    # which is the only direct evidence of why the halt fired.  Keeping them
+    # labelled means they can be excluded from estimator scoring (where they
+    # would be noise) while still being available for studying false halts.
+    def _tag_verify_outcome(self, outcome, drop, thresh, step_snr, via=''):
+        path = getattr(self, '_last_verify_path', None)
+        if not path:
+            return
+        try:
+            with open(path, 'a') as fh:
+                fh.write("# outcome=%s drop=%.4f thresh=%.4f step_snr=%.2f%s\n"
+                         % (outcome, drop, thresh, step_snr,
+                            (" via=%s" % via) if via else ""))
+        except (IOError, OSError) as e:
+            logging.warning("resonance_probe: verify outcome tag failed: %s", e)
+        self._last_verify_path = None
+
+    # One monotonic ramp -> the Z at which the amplitude crosses between air and
+    # contact, plus the step SNR.  'descending' picks which way the ramp runs
+    # and therefore which sign the contact edge has: pressing in makes the
+    # amplitude FALL, releasing makes it RISE.  Returns (edge_z, snr).
+    def _ramp_edge(self, zs, amps, descending, air_amp, contact_amp):
+        import numpy as np
+        zs = np.asarray(zs, dtype=np.float64)
+        amps = np.asarray(amps, dtype=np.float64)
+        order = np.argsort(-zs if descending else zs)
+        dz = zs[order]
+        da = amps[order]
+        if len(da) < 3:
+            return None, 0.
+        # DERIVATIVE check, same principle as the live halt test: contact is a
+        # STEP, and a step is far better separated from air than a ratio of
+        # medians is.  The ramp here is slow enough to resolve it - at
+        # VERIFY_RAMP_SPEED 0.5mm/s a window spans ~0.027mm against a ~0.030mm
+        # event, where the calibration sweep at 1.0mm/s cannot.
+        #
+        # This matters because verify is the last line of defence: it is what
+        # rejected a false halt 660um above the bed.  A ratio of medians over a
+        # short ramp can read a real touch as marginal (that is exactly why
+        # VERIFY_DROP had to drop from 15% to 5% on this machine); a step test
+        # does not have that dilution problem.
+        edge, snr = None, 0.
+        steps = (da[1:] - da[:-1]) / np.maximum(da[:-1], 1e-9)
+        if len(steps) >= 3:
+            # Noise from the first half of the ramp: going down that end is
+            # air, going up it is contact - either way it is the flat part,
+            # before the edge.
+            air_steps = steps[:max(2, len(steps) // 2)]
+            sd = float(np.std(air_steps))
+            # The contact edge is the most NEGATIVE step on the way down and
+            # the most POSITIVE on the way up.
+            worst = float(np.min(steps)) if descending else float(np.max(steps))
+            found = (worst < 0.) if descending else (worst > 0.)
+            if sd > 1e-6 and found:
+                snr = abs(worst) / sd
+            # The steepest step IS the contact edge, and it localises the
+            # transition better than the air/contact midpoint crossing when the
+            # two levels are close.  Take the midpoint of the window pair that
+            # straddles it.
+            if found:
+                j = int(np.argmin(steps) if descending else np.argmax(steps))
+                edge = float(0.5 * (dz[j] + dz[j + 1]))
+        # Prefer the air/contact midpoint crossing when it exists: it is the
+        # long-standing, well-tested estimator.  The step-based edge above is
+        # the fallback for the case it cannot handle (levels too close for a
+        # midpoint to be crossed cleanly).
+        if air_amp > contact_amp:
+            mid = 0.5 * (air_amp + contact_amp)
+            for j in range(1, len(da)):
+                prev, cur = da[j - 1], da[j]
+                if descending:
+                    # falling through mid: air -> contact
+                    if not (prev >= mid >= cur):
+                        continue
+                    frac = (prev - mid) / max(prev - cur, 1e-9)
+                else:
+                    # rising through mid: contact -> air
+                    if not (prev <= mid <= cur):
+                        continue
+                    frac = (mid - prev) / max(cur - prev, 1e-9)
+                edge = float(dz[j - 1] + (dz[j] - dz[j - 1]) * frac)
+                break
+        return edge, snr
 
     # A descent that reached the floor without halting is NOT proof that the
     # bed was never touched.  The nozzle may be pressed against it right now,
@@ -1919,6 +2086,9 @@ class HaltingContactProbe:
             step_min = gcmd.get_float("VERIFY_STEP_SNR", 8., minval=0.)
             by_step = step_min > 0. and step_snr >= step_min
             if drop >= thresh or by_step:
+                self._tag_verify_outcome(
+                    'confirmed', drop, thresh, step_snr,
+                    "ratio" if drop >= thresh else "step")
                 final_z = refined if refined is not None else contact_z
                 _dbg(gcmd,
                     "verify: CONFIRMED contact z=%.4f%s (air=%.0f contact=%.0f,"
@@ -1929,9 +2099,22 @@ class HaltingContactProbe:
                        air_a, touch_a, drop * 100., thresh * 100.,
                        step_snr, step_min,
                        "ratio" if drop >= thresh else "step"))
+                d = self._verify_detail or {}
+                if d.get('bias') is not None:
+                    # The up/down difference is the interesting number: a
+                    # direction-symmetric error (backlash, ring-down) shows up
+                    # here and nowhere else in the probe's output.
+                    _dbg(gcmd,
+                         "verify: down=%.4f (n=%d, spread %.1fum) up=%.4f"
+                         " (n=%d, spread %.1fum) bias=%+.1fum%s"
+                         % (d['down'], d['down_n'], d['down_spread'] * 1000.,
+                            d['up'], d['up_n'], d['up_spread'] * 1000.,
+                            d['bias'] * 1000.,
+                            " [combined]" if d.get('combined') else ""))
                 toolhead.manual_move([x0, y0, final_z], lift_speed)
                 toolhead.wait_moves()
                 return final_z, True
+            self._tag_verify_outcome('rejected', drop, thresh, step_snr)
             gcmd.respond_info(
                 "verify: REJECTED false halt z=%.4f (air=%.0f touch=%.0f,"
                 " -%.0f%% < %.0f%%; step SNR %.1f < %.1f); re-arming below it"
