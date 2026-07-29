@@ -2345,6 +2345,60 @@ excitation_frequency:
 #warmup: 0.3
 #   Seconds of excitation before detection is enabled (lets it reach steady
 #   state).
+#detect_cycles: 5
+#   Width of one detection window, in excitation cycles. The window spans
+#   detect_cycles / excitation_frequency * speed millimetres of Z, which must be
+#   narrower than the contact transition itself - contact is only a few windows
+#   wide, so a window that is too wide dilutes it.
+#detect_step_z: 0.01
+#   Z advance between detection windows, in mm. NOTE that finer is not better
+#   for a step detector: a fixed amplitude drop split across more windows makes
+#   each per-window step smaller.
+#detect_time: 0.5
+#   stepwise mode: excitation dwell (s) per step.
+#detect_offset_frac: 0
+#   Fractional offset of the detection window within its step, for testing
+#   window alignment. Leave at 0.
+#probe_amplitude:
+#   Peak lateral displacement (mm) of the excitation. Unset (the default)
+#   derives it from accel_per_hz and excitation_frequency, which is normally
+#   what you want; set it only to hold displacement fixed while sweeping
+#   frequency.
+#drawdown_sensitivity: 0.10
+#   Minimum fractional fall below the running peak that counts as contact for
+#   the drawdown detector (the one that fires in practice). The threshold
+#   actually used is max(drawdown_sensitivity, drawdown_nsigma * measured air
+#   noise), estimated from the first windows of each descent, so a noisy point
+#   automatically demands a larger fall.
+#drawdown_nsigma: 8.0
+#   Noise multiplier in that threshold. Note this value is ALSO used by the
+#   calibration selector when ranking candidate modes, so changing it changes
+#   which mode calibration picks.
+#drawdown_lookback: 0.06
+#   How far back (mm) the drawdown detector's running peak may reach. An
+#   unbounded peak lets slow air wander accumulate against a peak set long ago
+#   and eventually fires in mid-air; 0.12 did so on 5 of 44 never-touched
+#   descents where 0.06 did so on 4, and live it took false halts from 7/16 to
+#   1/16 with no loss of detection.
+#deriv_sensitivity: 0.08
+#   Minimum single-window fractional drop for the parallel derivative detector.
+#   Per-axis overrides deriv_sensitivity_x/_y/_z are also accepted. The floor
+#   actually used is max(this, 1.5 * that axis's gradient floor).
+#verify_reps: 1
+#   Number of down/up ramp pairs the contact verification performs. Each rep
+#   yields one independent estimate per direction, so raising this trades time
+#   for datapoints (and lets the up/down difference be measured). Each rep
+#   presses to the verification depth again.
+#verify_combine: 1
+#   1 (the default) reports the mean of the down-ramp and up-ramp contact
+#   estimates; 0 reports the down ramp alone. Averaging both is better measured
+#   (2.3um vs 2.9um pooled repeatability) and, more importantly, cancels the
+#   up/down bias, which varies with bed POSITION (+1..+20um seen) rather than
+#   being a fixed machine constant.
+#trace_dir:
+#   If set, every descent and every verification ramp is written to this
+#   directory as CSV (amplitude per detection window). Intended for offline
+#   analysis of detector behaviour; unset (the default) writes nothing.
 #retune_range: 0
 #   If > 0, scan the driven response +/- this many Hz around excitation_frequency
 #   at the start of each probe session and adopt the measured peak (tracks

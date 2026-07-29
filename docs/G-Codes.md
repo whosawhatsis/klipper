@@ -1345,6 +1345,18 @@ enabled the probe is available through the standard probe commands
 [`PROBE_CALIBRATE`](#probe_calibrate), [`BED_MESH_CALIBRATE`](#bed_mesh_calibrate),
 etc.).  See [Resonance Probe](Resonance_Probe.md) for an overview.
 
+Those commands additionally accept `VERBOSE=1` (per-probe detection diagnostics)
+and one-off overrides of the contact verification, which are otherwise taken
+from the config section: `VERIFY_REPS=<n>` (down/up ramp pairs) and
+`VERIFY_COMBINE=<0|1>` (report the down ramp alone, or the mean of both
+directions).  These are useful for comparing settings without editing the config
+and re-restarting; see
+[Contact verification](Resonance_Probe.md#contact-verification-the-downup-ramps).
+
+Probing turns the part-cooling fan off for the duration and restores it
+afterwards (the heatsink fan is left alone); see
+[Resonance_Probe.md](Resonance_Probe.md#the-part-cooling-fan-is-disabled-while-probing).
+
 ### [resonance_probe_calibrate]
 
 The following commands are available when a

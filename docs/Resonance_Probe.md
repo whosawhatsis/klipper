@@ -65,6 +65,35 @@ missed by watching only the driven axis.
   faster descent that a shorter cycle would allow is given back to a weaker,
   noisier measurement.  Keep `speed` at or below ~1 mm/s.
 
+## The part-cooling fan is disabled while probing
+
+The probe measures the amplitude of a single frequency bin, and its halt
+threshold is derived from the noise it sees in air on each descent.  Anything
+that vibrates the toolhead therefore raises the bar for detection.
+
+Measured on the development machine with the toolhead parked:
+
+| source | broadband | in-band effect |
+| --- | --- | --- |
+| heatsink fan (on whenever the nozzle is hot) | +1% | 0.7-1.2x, no tones |
+| part-cooling fan, full speed | ~20x | up to 3.1x, plus a strong tone |
+
+The part fan also emits a discrete tone whose frequency tracks its RPM - on that
+machine 100 Hz at 25% duty rising to 158 Hz at 100%, with harmonics - so across
+its speed range it sweeps through the region where useful resonance modes live.
+Turning it down is not a fix; only off is.
+
+So `[resonance_probe]` **saves the part fan speed, turns the fan off for the
+duration of a probe, and restores it afterwards**, reporting both in the console.
+The heatsink fan is deliberately left alone: it measures clean and it must keep
+running whenever the nozzle is hot.  The fan is restored even if the probe fails,
+since leaving a print's part fan off would be worse than a failed probe.
+
+If your machine's fan layout differs (the part fan smaller, or further from the
+accelerometer) the penalty will differ too, but the behaviour is not
+configurable: probing with a known noise source running produces a worse
+measurement in every case tested.
+
 ## Probe modes
 
 The `probe_mode` config option selects how the descent and detection are
@@ -155,6 +184,43 @@ warmup: 0.8
 #   nearest.
 #probe_step: 0.05
 #   stepwise mode: descent increment.
+#detect_cycles: 5
+#   Width of one detection window, in excitation cycles.  A window spans
+#   detect_cycles / excitation_frequency * speed mm of Z and must be NARROWER
+#   than the contact transition, which is only a few windows wide.
+#detect_step_z: 0.01
+#   Z advance between detection windows.  Finer is NOT better here: a fixed
+#   amplitude drop split over more windows makes each per-window step smaller,
+#   which a step detector sees as weaker, not better resolved.
+#detect_time: 0.5
+#   stepwise mode: excitation dwell (s) per step.
+#probe_amplitude:
+#   Peak lateral displacement (mm).  Unset derives it from accel_per_hz and the
+#   frequency; set it only to hold displacement fixed while sweeping frequency.
+#drawdown_sensitivity: 0.10
+#drawdown_nsigma: 8.0
+#drawdown_lookback: 0.06
+#   The drawdown detector: contact is a fall of at least
+#   max(drawdown_sensitivity, drawdown_nsigma * measured air noise) below the
+#   running peak, where the peak may look back at most drawdown_lookback mm.
+#   The noise term is measured from the first windows of each descent, so a
+#   noisy spot automatically demands a bigger fall - there are no per-location
+#   floors to maintain.  The lookback bound matters: an unbounded peak lets slow
+#   air wander accumulate and eventually fires in mid-air.
+#   NOTE drawdown_nsigma is also used by the calibration selector when ranking
+#   candidate modes, so changing it changes which mode calibration chooses.
+#deriv_sensitivity: 0.08
+#   Parallel derivative detector: minimum single-window fractional drop.  Also
+#   accepts per-axis deriv_sensitivity_x/_y/_z.
+#verify_reps: 1
+#   Down/up ramp pairs performed by contact verification.  Each rep adds one
+#   independent estimate per direction - and presses to the verify depth again.
+#verify_combine: 1
+#   1 (default) reports the MEAN of the down-ramp and up-ramp estimates; 0
+#   reports the down ramp alone.  See "Contact verification" below.
+#trace_dir:
+#   If set, every descent and every verification ramp is saved here as CSV, for
+#   offline analysis.  Unset (the default) writes nothing.
 #probe_nudge_radius: 0
 #   If a repeat touch at the same point exceeds the standard 'samples_tolerance'
 #   (disagreement between repeated samples), retry at a point on a circle of
@@ -332,6 +398,31 @@ resonance search if you already know them), `ACCEL_PER_HZ=`, `POINT=x,y,z`,
 * `speed` (or `descend_speed`) trades probe time against over-drive; slower is
   gentler.  Stay at or below ~1 mm/s - faster smears the detection (see the
   limitations above).
+
+### Contact verification (the down/up ramps)
+
+A halt only bounds where contact is; the reported height comes from a slower
+verification pass afterwards.  It lifts clear, ramps back DOWN through the
+candidate height, dwells, ramps back UP, and looks for the amplitude edge on
+each ramp.  This both rejects false halts (a halt in mid air shows no drop when
+re-crossed) and refines the height.
+
+Both directions are analysed and `verify_combine: 1` reports their **mean**.
+That is worth knowing about because the two directions do not agree: on the
+development machine the up-ramp estimate sat anywhere from 1 um to 20 um from
+the down-ramp estimate, and the difference varied with **position on the bed**
+rather than being a fixed machine constant, so it cannot be calibrated out.
+Averaging the two cancels it by construction, and also measured better
+(2.3 um vs 2.9 um pooled repeatability).  Set `verify_combine: 0` to report the
+down ramp alone if you want the older behaviour.
+
+`verify_reps` raises the number of ramp pairs.  Each rep is an independent
+estimate per direction, but also another press to the verification depth, so
+raise it for diagnosis rather than routine probing.  Aggregation across reps
+uses the mean, not the median: on this machine roughly one down ramp in three is
+an outlier of ~12 um that a median correctly rejects, yet the median still loses,
+because with four ramps it is the average of the middle two and so discards half
+the samples.
 
 ### Re-tuning for drift
 
