@@ -436,6 +436,10 @@ class ResonanceProbe:
         # worn spot measurably changes both its noise floor and which axis
         # carries the contact signal.
         self.trace_dir = config.get('trace_dir', None)
+        # Part-fan speed saved while probing, restored afterwards.  See
+        # _quiet_part_fan for why the part fan (but not the heatsink fan) must
+        # be off for a measurement to mean anything.
+        self._fan_saved = None
         self.allow_z = config.getboolean('allow_z_vibration', False)
         # Parse the printer axis to vibrate (x/y/z or a dx,dy,dz vector)
         raw_axis = config.get('vibrate_axis', 'x')
@@ -564,6 +568,66 @@ class ResonanceProbe:
         return self.param_helper.get_probe_params(gcmd)
     def get_offsets(self, gcmd=None):
         return self.probe_offsets.get_offsets(gcmd)
+    # The part-cooling fan is a MEASURED hazard, not a theoretical one.  Parked
+    # on this machine it adds ~25x broadband to the accelerometer plus a hard
+    # tone whose fundamental tracks RPM: 100Hz at 25%, 108 at 50%, 136 at 75%,
+    # 158 at 100%, with second harmonics at 200-216Hz.  That sweep crosses or
+    # nearly hits every excitation mode in use (68Hz~65.5, 216Hz~212.2, and
+    # 158Hz is 10Hz off 148), and in band it is up to 10x more noise.  Since the
+    # halt threshold is self-derived as max(sens, nsigma*sd) from air noise,
+    # that inflates the threshold and silently shrinks detection margin - the
+    # same failure as a false halt, from a cause outside the probe.
+    #
+    # Turning it down is NOT a workaround: 50% produced the LOUDEST tone of all
+    # (a mount resonance), so the damage is not monotonic with speed.  Off is
+    # the only safe state.
+    #
+    # The HEATSINK fan is deliberately left alone: measured at +1% broadband
+    # with no tones, and it must keep running whenever the nozzle is hot.
+    def _quiet_part_fan(self, gcmd):
+        if self._fan_saved is not None:
+            return                      # already quieted by this session
+        fan = self.printer.lookup_object('fan', None)
+        if fan is None:
+            return
+        # get_status() reports the APPLIED speed, and M106 is scheduled through
+        # the motion queue - so a fan command issued just before probing is
+        # still pending and reads as 0.  Observed on hardware: a probe preceded
+        # by "M106 S153" saw speed=0, disabled nothing, and then the fan spun up
+        # DURING the descent.  Flush first so the reading is the real state.
+        self.printer.lookup_object('toolhead').wait_moves()
+        eventtime = self.printer.get_reactor().monotonic()
+        speed = float(fan.get_status(eventtime).get('speed', 0.) or 0.)
+        if speed <= 0.:
+            return
+        self._fan_saved = speed
+        gcode = self.printer.lookup_object('gcode')
+        # Dwell so the fan actually spins DOWN before anything is measured -
+        # commanding zero does not stop it instantly.
+        gcode.run_script_from_command("M107\nG4 P2000")
+        self._fan_msg(gcmd,
+            "resonance_probe: part fan was at %.0f%%; disabled for probing"
+            " (it adds up to 10x in-band noise) and will be restored"
+            % (speed * 100.,))
+
+    # Session teardown has no gcmd, and ResonanceProbe does not hold a gcode
+    # object, so route the message through whichever is available.
+    def _fan_msg(self, gcmd, msg):
+        if gcmd is not None:
+            gcmd.respond_info(msg)
+        else:
+            self.printer.lookup_object('gcode').respond_info(msg)
+
+    def _restore_part_fan(self, gcmd=None):
+        speed = self._fan_saved
+        if speed is None:
+            return
+        self._fan_saved = None
+        gcode = self.printer.lookup_object('gcode')
+        gcode.run_script_from_command("M106 S%d" % (int(round(speed * 255.)),))
+        self._fan_msg(gcmd, "resonance_probe: part fan restored to %.0f%%"
+                      % (speed * 100.,))
+
     def start_probe_session(self, gcmd):
         # Once per session: (optionally) re-tune.  With a freq_mesh + retune, each
         # mesh cell is retuned LAZILY at the first probe point that needs it (no
@@ -571,6 +635,8 @@ class ResonanceProbe:
         # mutable session copy.  Without a mesh, retune the single scalar now.
         self._reported_freq = None
         self._retuned = set()
+        # Before anything is measured, including the retune sweep below.
+        self._quiet_part_fan(gcmd)
         if self.retune_range > 0. and self._freq_mesh is not None:
             self._check_axis_safety(gcmd)
             self._active_mesh = [list(r) for r in self._freq_mesh]
@@ -898,6 +964,17 @@ class ResonanceProbe:
             halt_sensitivity_axis=self.halt_sensitivity_axis)
 
     def _hostdriven_probe(self, gcmd):
+        # A single probe can also be issued outside a session (and a session
+        # that ERRORS never reaches end_probe_session), so the fan is quieted
+        # here too and restored on any way out.  Both calls are idempotent.
+        self._quiet_part_fan(gcmd)
+        try:
+            return self._hostdriven_probe_inner(gcmd)
+        except Exception:
+            self._restore_part_fan(gcmd)
+            raise
+
+    def _hostdriven_probe_inner(self, gcmd):
         self._check_axis_safety(gcmd)
         toolhead = self.printer.lookup_object('toolhead')
         params = self.param_helper.get_probe_params(gcmd)
@@ -3057,6 +3134,10 @@ class ResonanceProbeSession:
         return res
     def end_probe_session(self):
         self.results = []
+        # Normal end of a session.  An ABORTED probe does not reach here, which
+        # is why _hostdriven_probe also restores on the way out of an error -
+        # leaving a print's part fan off would be far worse than a stray probe.
+        self.rprobe._restore_part_fan()
 
 
 def load_config(config):
