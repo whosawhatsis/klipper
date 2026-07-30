@@ -436,6 +436,15 @@ class ResonanceProbe:
         # worn spot measurably changes both its noise floor and which axis
         # carries the contact signal.
         self.trace_dir = config.get('trace_dir', None)
+        # Free-form tag copied into every trace header.  The physical surface is
+        # a measurement condition exactly like freq or accel_per_hz - a textured
+        # plate detects differently from a smooth one - but nothing in the
+        # machine can read it, so it has to be declared.  Config rather than
+        # G-code on purpose: a deploy service-restarts klippy, and a note that
+        # lived in RAM would silently vanish mid-session and untag the traces
+        # recorded after it.  Absence of the line means "not declared", which is
+        # also what the 264 traces recorded before this option say.
+        self.trace_note = config.get('trace_note', None)
         # Part-fan speed saved while probing, restored afterwards.  See
         # _quiet_part_fan for why the part fan (but not the heatsink fan) must
         # be off for a measurement to mean anything.
@@ -1955,6 +1964,15 @@ class HaltingContactProbe:
                 fh.write("# z_cand=%.5f reps=%d\n" % (z_cand, reps))
                 fh.write("# air_amp=%.3f contact_amp=%.3f\n"
                          % (air_amp, contact_amp))
+                note = getattr(rp, 'trace_note', None)
+                if note:
+                    # The replay loaders parse header lines by splitting on
+                    # whitespace and then on '=', so a note containing spaces
+                    # would silently truncate to its first word.  Emit a
+                    # whitespace-free value instead of trusting the operator to
+                    # remember - a mangled tag is unrecoverable without
+                    # re-probing, and probing wears the plate.
+                    fh.write("# note=%s\n" % ("-".join(note.split()),))
                 fh.write("z,amp,tag,rep\n")
                 for z, a, t, r in zip(wz, wamp, wtag, wrep):
                     fh.write("%.5f,%.3f,%s,%d\n" % (z, a, t, r))
@@ -2661,6 +2679,15 @@ class HaltingContactProbe:
                                      for v in endstop._dd_thresh),))
                 fh.write("# trigger_kind=%s trigger_axis=%s\n"
                          % (endstop._trigger_kind, endstop._trigger_axis))
+                note = getattr(rp, 'trace_note', None)
+                if note:
+                    # The replay loaders parse header lines by splitting on
+                    # whitespace and then on '=', so a note containing spaces
+                    # would silently truncate to its first word.  Emit a
+                    # whitespace-free value instead of trusting the operator to
+                    # remember - a mangled tag is unrecoverable without
+                    # re-probing, and probing wears the plate.
+                    fh.write("# note=%s\n" % ("-".join(note.split()),))
                 fh.write("mm_below_arm,amp_x,amp_y,amp_z\n")
                 for depth, ax, ay, az in self.last_trace:
                     fh.write("%.5f,%.3f,%.3f,%.3f\n" % (depth, ax, ay, az))
