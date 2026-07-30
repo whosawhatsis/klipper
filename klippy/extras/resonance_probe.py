@@ -2646,6 +2646,11 @@ class HaltingContactProbe:
                             endstop._descend_speed))
                 fh.write("# win_n=%s step_z=%.5f\n"
                          % (endstop._win_n, endstop._step_z))
+                # Warm-up gates when detection arms AND where the trace starts,
+                # so two sets recorded at different warmups are not comparable
+                # in their air baseline.  Unrecorded, that difference is
+                # invisible in the corpus and reads as a real effect.
+                fh.write("# warmup=%.3f\n" % (self.warmup,))
                 fh.write("# halt_floor=%s\n"
                          % (",".join("%.4f" % v for v in endstop._halt_axis),))
                 fh.write("# deriv_floor=%s\n"

@@ -616,6 +616,20 @@ class ResonanceProbeCalibrate:
     # unchanged until someone opts in.  CAL_MATCH_LIVE=1 takes them from the
     # live probe config instead, which is the comparison worth running:
     # characterise under the same window the halt will use.
+    # Warm-up gates when detection ARMS, and the descent trace starts there too.
+    # Too short and excitation ring-up lands inside the air baseline, so the
+    # detector's own reference is wrong and it can fire in air: an under-warmed
+    # descent was measured triggering 1.48mm ABOVE contact, and recomputing that
+    # same trace against a clean baseline moved it to the +117um where every
+    # other descent fired.  Four call sites had drifted to hardcoded 0.5/0.8
+    # while the machine was configured for 0.8 - the same failure CAL_MATCH_LIVE
+    # exists to correct for the detection window.  Default to the LIVE probe's
+    # configured value; 0.5 stays the fallback when [resonance_probe] is not
+    # configured, which is a supported way to run RESONANCE_PROBE_CONTACT.
+    def _warmup(self, gcmd, name="WARMUP"):
+        rp = self.printer.lookup_object('resonance_probe', None)
+        return gcmd.get_float(name, getattr(rp, 'warmup', 0.5), above=0.05)
+
     def _detect_params(self, gcmd):
         rp = self.printer.lookup_object('resonance_probe', None)
         if rp is not None and gcmd.get_int("CAL_MATCH_LIVE", 0):
@@ -739,7 +753,7 @@ class ResonanceProbeCalibrate:
         # First-contact descent speed: slow enough for an accurate contact Z (a
         # single descent at strong amplitude, so this is not the slow part).
         speed = gcmd.get_float("CONTACT_SPEED", 0.1, above=0., maxval=5.)
-        warmup = gcmd.get_float("CONTACT_WARMUP", 0.5, above=0.05)
+        warmup = self._warmup(gcmd, "CONTACT_WARMUP")
         # Bounded bidirectional amplitude-sweep parameters.  The ramp SPAN
         # (up+down = 0.05mm) is chosen together with CONTACT_RAMP_SPEED - see
         # characterize_amplitude.  Briefly: segments per ramp are
@@ -1126,7 +1140,7 @@ class ResonanceProbeCalibrate:
         # bed) true contact is ~-0.1, so a -0.2 floor bounds any detection miss
         # to ~0.1mm of over-travel.  Run only after a paper-gauge level.
         z_min = gcmd.get_float("ZMIN", -0.2)
-        warmup = gcmd.get_float("WARMUP", 0.5, above=0.05)
+        warmup = self._warmup(gcmd)
         amp = accel_per_hz / (4. * math.pi**2 * freq)
         out_idx = {'x': 0, 'y': 1, 'z': 2}[accel_axis]
         # Overrun protection for the vibrating descent (see CALIBRATE_MESH /
@@ -1356,7 +1370,7 @@ class ResonanceProbeCalibrate:
         if ceiling <= z_min:
             raise gcmd.error("Mode select: start Z %.3f is at/below the floor"
                              " %.3f; raise the nozzle" % (ceiling, z_min))
-        warmup = gcmd.get_float("CONTACT_WARMUP", 0.5, above=0.05)
+        warmup = self._warmup(gcmd, "CONTACT_WARMUP")
         speed = gcmd.get_float("CONTACT_SPEED", 0.1, above=0., maxval=5.)
         up_margin = gcmd.get_float("CONTACT_UP", 0.03, above=0.)
         down_margin = gcmd.get_float("CONTACT_DOWN", 0.02, above=0.)
@@ -1629,7 +1643,7 @@ class ResonanceProbeCalibrate:
                                       above=0., maxval=self.max_accel_per_hz)
         speed = gcmd.get_float("SPEED", 0.3, above=0., maxval=5.)
         reps = gcmd.get_int("REPS", 5, minval=2, maxval=20)
-        warmup = gcmd.get_float("WARMUP", 0.8, above=0.05)
+        warmup = self._warmup(gcmd)
         # The floor stays ABOVE the bed so the descent never contacts - we are
         # measuring in-air descent noise ONLY.  With a paper-gauge Z=0 the bed is
         # ~-0.2, so a +0.1 air floor keeps ~0.3mm of clearance.
@@ -2224,7 +2238,7 @@ class ResonanceProbeCalibrate:
         z_min = gcmd.get_float("CONTACT_ZMIN", -0.2)
         speed = gcmd.get_float("CONTACT_SPEED", 0.1, above=0., maxval=5.)
         # Warmup reused from the probe (its ring-up time is the same physics).
-        warmup = gcmd.get_float("CONTACT_WARMUP", probe.warmup, above=0.05)
+        warmup = self._warmup(gcmd, "CONTACT_WARMUP")
         up_margin = gcmd.get_float("CONTACT_UP", 0.03, above=0.)
         down_margin = gcmd.get_float("CONTACT_DOWN", 0.02, above=0.)
         cycles = gcmd.get_int("CONTACT_CYCLES", 4, minval=1)
