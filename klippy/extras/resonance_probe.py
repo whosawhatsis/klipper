@@ -3018,7 +3018,7 @@ class HaltingContactProbe:
 
         # Score by the DETECTOR'S margin on the WEAKEST axis, not by headroom
         # on the best one.  Both changes were derived by simulating the live
-        # detector over recorded descents (scripts/selector_eval.py):
+        # detector over recorded descents (local/selector_eval.py):
         #
         #  - Weakest, not best: which axis carries contact varies with bed
         #    position, so a level chosen because one axis looked excellent here

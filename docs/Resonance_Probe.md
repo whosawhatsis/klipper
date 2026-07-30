@@ -221,6 +221,11 @@ warmup: 0.8
 #trace_dir:
 #   If set, every descent and every verification ramp is saved here as CSV, for
 #   offline analysis.  Unset (the default) writes nothing.
+#trace_note:
+#   Free-form text copied into every saved trace header as "# note=...".  Record
+#   conditions the machine cannot detect but that change the signal - above all
+#   which build surface is installed.  Update it when the condition changes.
+#   Whitespace becomes '-' on write (the replay tools split headers on spaces).
 #probe_nudge_radius: 0
 #   If a repeat touch at the same point exceeds the standard 'samples_tolerance'
 #   (disagreement between repeated samples), retry at a point on a circle of
@@ -329,7 +334,8 @@ Useful parameters:
 * `SAVE=0` - report the suggested values without modifying the config.
 * `CONTACT_ZMIN=` - hard descent floor (default -0.2; see the paper-method note
   above).  `CONTACT_SPEED=` - first-contact descent speed.  `CONTACT_WARMUP=` -
-  excitation warm-up before detection.
+  excitation warm-up before detection arms; defaults to the configured
+  `warmup`.
 * `CONTACT_UP=`, `CONTACT_DOWN=`, `CONTACT_LEVELS=`, `CONTACT_CYCLES=`,
   `CONTACT_DWELL=`, `CONTACT_RAMP_SPEED=`, `CONTACT_MIN_DROP=`,
   `CONTACT_TARGET_NOISE=` - bounds and targets for the bounded amplitude search
@@ -381,7 +387,10 @@ floor (default -0.2) is only a backstop for a detection miss.
 `RESONANCE_PROBE_CONTACT` also accepts `FREQ=` and `ACCEL_AXIS=` (to skip the
 resonance search if you already know them), `ACCEL_PER_HZ=`, `POINT=x,y,z`,
 `SENSITIVITY=`, `HALT_SENSITIVITY=`, `SPEED=` (descent speed, default 1 mm/s),
-`WARMUP=`, and `ZMIN=`/`DISTANCE=` (safety floor and max descent).
+`WARMUP=` (excitation warm-up before detection arms; defaults to the
+`[resonance_probe] warmup:` value, since arming before the oscillation has
+reached steady state leaves ring-up in the air baseline the detector
+measures against), and `ZMIN=`/`DISTANCE=` (safety floor and max descent).
 
 ## Tuning
 

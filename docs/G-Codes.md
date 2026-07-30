@@ -1456,7 +1456,8 @@ resonance while descending, and **halt in real time** on nozzle-to-bed contact
 (the same host-driven halt the `hostdriven` probe mode uses), report that
 contact Z, and retract to the start height.  This is a one-shot nozzle-contact
 reference for calibrating a *different*, non-contact probe's `z_offset`, and
-works without configuring `[resonance_probe]` as the machine probe.  If `FREQ`
+works without configuring `[resonance_probe]` as the machine probe.  `WARMUP`
+defaults to the configured `[resonance_probe] warmup:` value.  If `FREQ`
 is omitted the resonance is located automatically first.  Because it halts, it
 does not drive into the bed; `ZMIN` (default -0.2) is only a backstop for a
 detection miss.  Home and **set Z=0 with the paper method**, then position the

@@ -2399,6 +2399,14 @@ excitation_frequency:
 #   If set, every descent and every verification ramp is written to this
 #   directory as CSV (amplitude per detection window). Intended for offline
 #   analysis of detector behaviour; unset (the default) writes nothing.
+#trace_note:
+#   Free-form text copied into the header of every saved trace as "# note=...".
+#   Use it to record measurement conditions the machine cannot detect but which
+#   change the signal - most importantly which build surface is installed, since
+#   a textured plate detects differently from a smooth one. Update it whenever
+#   the condition changes; traces saved with no note say only "not declared".
+#   Whitespace is replaced with '-' when written, because the offline replay
+#   tools parse header lines by splitting on whitespace.
 #retune_range: 0
 #   If > 0, scan the driven response +/- this many Hz around excitation_frequency
 #   at the start of each probe session and adopt the measured peak (tracks
