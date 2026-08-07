@@ -94,6 +94,70 @@ accelerometer) the penalty will differ too, but the behaviour is not
 configurable: probing with a known noise source running produces a worse
 measurement in every case tested.
 
+## Salvaged contacts are verified too
+
+If the descent misses its halt, the probe tries to recover a height from the
+release ramp rather than failing outright.  That recovery runs *only* because
+detection already failed, so it is the last result that should be trusted
+without checking - but it used to be the only one that skipped verification
+entirely, because the salvage branch returned before the verify pass ran.  A bed
+mesh point was corrupted by 345 um that way: the descent over-pressed 0.282 mm,
+salvage recovered a height, and nothing checked it.
+
+A salvaged contact is now put through the same confirm test as any other, with
+one difference: if it fails, the probe does NOT re-arm below it and try again.
+Salvage only happens after an over-press, so the candidate is already deep, and
+descending further is the wrong response.  It reports no contact instead.
+`VERIFY_SALVAGE=0` restores the old accept-without-checking behaviour for
+diagnosis.
+
+## Weak bed locations, and why repeat probing does not protect you
+
+The mode's response varies with toolhead position.  At most places that is a
+harmless few percent, but a location can sit where the chosen mode is weakly
+excited, and there the descent can miss its halt: the recovery path then reports
+a height well BELOW the true surface.
+
+Measured on a 3x3 mesh: at one point the air response was ~40% down on every
+axis (single-bin amplitude 3162 against ~6000 elsewhere) while the air *noise*
+stayed at 1-2%.  A weak spot, not a noisy one.  The halt was missed, recovery
+over-pressed 0.282 mm, and the mesh point landed 345 um below its neighbours.
+
+The important part: **`samples: 2` with `samples_tolerance` did not catch it.**
+Two touches agreed to 23 um, inside a 25 um tolerance, and their mean became the
+mesh value.  A consistency check tests for random scatter; a weak location
+produces a *systematic* error, so extra touches reproduce it and agree with each
+other more confidently the more you take.
+
+`min_air_fraction` is the guard for this.  The probe already measures the air
+response on every descent, so it compares each contact against the median of
+those accepted so far this session and refuses one that is far below - naming
+the point rather than reporting a wrong height.  If it fires, the useful
+responses are to move the probe point, choose a mode with response at that
+location (`RESONANCE_PROBE_RANK_FREQ`), or set `probe_nudge_radius` so a
+disagreeing point is retried slightly off the bad spot.
+
+The comparison is made **per measurement axis**.  The air baseline is taken on
+whichever axis triggered the live halt, and the axes sit at very different
+absolute levels - on one machine the x-triggered baselines ran a median 8758
+against 3986 for z, a factor of 2.2.  Pooling them judges a z baseline against
+an x-dominated reference: replaying a 59-descent corpus, a pooled reference
+refused 25 descents where a per-axis one refused 1.  So each axis accumulates
+its own history, and a session that mixes trigger axes still compares like with
+like.
+
+The cost is a longer blind window: the guard needs three accepted contacts
+before it has a reference, and that warm-up is now per axis.  On the same
+59-descent corpus, 3 descents ran unguarded under a pooled history and 8 under a
+per-axis one.  A short mesh, or one that switches trigger axis late, is
+unguarded for longer than the point count suggests.
+
+For a mesh, `probe_nudge_radius` is what keeps one bad point from ending the
+run: a point that cannot be probed at all - no contact, a refusal from this
+guard, or a halt blocked by `verify_corroborate_tol` - is retried at successive
+points on the nudge ring, and only fails the mesh once that budget
+(`samples_tolerance_retries`) is spent.
+
 ## Probe modes
 
 The `probe_mode` config option selects how the descent and detection are
@@ -226,6 +290,31 @@ warmup: 0.8
 #   conditions the machine cannot detect but that change the signal - above all
 #   which build surface is installed.  Update it when the condition changes.
 #   Whitespace becomes '-' on write (the replay tools split headers on spaces).
+#verify_step_snr: 0
+#   Second confirm criterion, OR'd with the ratio test.  Disabled by default -
+#   OR'd criteria can only ADD confirmations, and the only one this ever
+#   contributed was a contact 1.6mm above the bed.  See "Salvaged contacts".
+#verify_contact_dwell: 0
+#   Seconds to hold the nozzle in contact before the verify ramps.  With a hot
+#   nozzle this melts deposit off the tip - contact TIME clears it, and holding
+#   beats repeated descents because the material cannot re-cool in between.
+#   0 disables (default); only useful with the nozzle hot.
+#verify_rise_abort: 0.10
+#   Stop instead of re-arming lower when a candidate is rejected because the
+#   amplitude ROSE this much on contact - that means inverted coupling at this
+#   location, not that contact is further down.  0 disables.
+#verify_corroborate_tol: 0.05
+#   Stop instead of re-arming lower when the rejected halt lands within this
+#   distance (mm) of a contact already CONFIRMED at the same point - the halt is
+#   that contact with a decayed air level, so re-arming below it plows into the
+#   bed.  Also caps how far a later re-arm may descend past a known contact.
+#   0 disables.  See "Weak bed locations" below.
+#min_air_fraction: 0.7
+#   Refuse a contact whose excitation was weaker than this fraction of the
+#   median air response accepted so far this session - a bed location where the
+#   mode is weakly excited can miss its halt and read LOW, and because that
+#   error is systematic, repeat touches agree and pass 'samples_tolerance'.
+#   See "Weak bed locations" below.  0 disables.
 #probe_nudge_radius: 0
 #   If a repeat touch at the same point exceeds the standard 'samples_tolerance'
 #   (disagreement between repeated samples), retry at a point on a circle of

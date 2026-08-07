@@ -2407,6 +2407,52 @@ excitation_frequency:
 #   the condition changes; traces saved with no note say only "not declared".
 #   Whitespace is replaced with '-' when written, because the offline replay
 #   tools parse header lines by splitting on whitespace.
+#verify_step_snr: 0
+#   Second contact-confirmation criterion, OR'd with the amplitude-ratio test,
+#   so it can only ADD confirmations. Disabled by default: the only effect ever
+#   measured from it was a false confirmation of a contact 1.6mm above the bed
+#   (1.77% drop against a 15% ratio threshold, step SNR 11.98), while every
+#   genuine contact in the same run confirmed via the ratio test. Set >0 to
+#   re-enable.
+#verify_contact_dwell: 0
+#   Seconds to hold the nozzle in contact after the halt, before the verify
+#   ramps run. With a HOT nozzle this clears melted deposit off the tip: what
+#   removes it is contact TIME rather than contact count, and holding is more
+#   effective than repeated descents because the material has no chance to
+#   re-cool between touches. Measured with a hot nozzle, successive contacts
+#   converged from +64um to +36um at one point and +26um to +1um at another as
+#   material was removed - the reading returned to baseline while the nozzle was
+#   still at temperature, so this is removal, not thermal expansion. Only useful
+#   when the nozzle is hot enough to melt what is on it; 0 (the default)
+#   disables it.
+#verify_rise_abort: 0.10
+#   If a candidate is rejected because the amplitude ROSE on contact by at least
+#   this fraction, stop rather than re-arm below it. A rejection normally
+#   re-arms lower, which is correct when a false halt sits above true contact;
+#   but where the mode is weakly driven, touching can ADD signal, and then
+#   descending further walks toward a deep false contact. Measured: rejections
+#   at -66%, -19% and -13% marched a descent from z=1.41 past the true surface
+#   and over-pressed 0.282mm. 0 disables the check.
+#min_air_fraction: 0.7
+#   Refuse a contact whose excitation was weaker than this fraction of the
+#   median air response accepted so far in the same probing session. The mode's
+#   response varies with bed position, and at a weak spot the descent can miss
+#   its halt entirely and report a height well below the true surface. Repeat
+#   sampling does not catch this: the error is systematic at that location, so
+#   two touches agree with each other and pass 'samples_tolerance'. Rather than
+#   report a wrong height, the probe raises an error naming the point. The check
+#   stays silent until three contacts have been accepted (it has no reference
+#   before that), so a session starting on a weak spot cannot be caught. Set to
+#   0 to disable.
+#verify_corroborate_tol: 0.05
+#   A rejected halt normally re-arms below itself, on the assumption that the
+#   halt was above true contact. That assumption is wrong when a contact has
+#   already been CONFIRMED at the same point within this distance (mm): the halt
+#   is that contact, read against a decayed air level, and re-arming below it
+#   drives the nozzle into the bed. In that case the probe fails the point
+#   instead. While a confirmed contact exists at the point, re-arming is also
+#   never allowed to descend more than this distance past it. Set to 0 to
+#   disable.
 #retune_range: 0
 #   If > 0, scan the driven response +/- this many Hz around excitation_frequency
 #   at the start of each probe session and adopt the measured peak (tracks
@@ -2442,6 +2488,14 @@ excitation_frequency:
 #   friction patch) does not just reproduce the disagreement. Retries are
 #   spread evenly around the circle. 0 (the default) reproduces the standard
 #   [probe] retry behavior.
+#   The same ring is used when a point is not merely inconsistent but
+#   unusable - no contact detected, or a contact refused because its excitation
+#   was too weak to measure ('min_air_fraction') or because it corroborated a
+#   contact already confirmed at that point ('verify_corroborate_tol'). Without
+#   this, one such point aborts the whole BED_MESH_CALIBRATE. Retries share the
+#   'samples_tolerance_retries' budget; when it is exhausted the original error
+#   is raised, so a genuinely dead location still fails rather than reporting an
+#   invented height. A good radius is about the nozzle tip's outer diameter.
 #z_offset: 0
 #speed:
 #samples:

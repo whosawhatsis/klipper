@@ -327,8 +327,37 @@ class _NudgingSampleAveragingHelper(probe.SampleAveragingHelper):
         retries = 0
         positions = []
         sample_count = params['samples']
+        rp = self.printer.lookup_object('resonance_probe', None)
+        point_error = getattr(rp, 'point_error', ())
         while len(positions) < sample_count:
-            pos = self._probe(gcmd)
+            try:
+                pos = self._probe(gcmd)
+            except point_error as e:
+                # The POINT is unusable, not the machine: no contact found, or a
+                # contact the probe refuses to measure (weak excitation, or a
+                # halt that corroborates an already-confirmed contact so it may
+                # not re-arm lower).  Re-probing the same spot reproduces it -
+                # that is what the nudge ring is for, and without it one bad
+                # point aborts the whole BED_MESH_CALIBRATE.  Exhausting the
+                # ring re-raises, so a genuinely dead location still fails
+                # loudly rather than reporting an invented height.
+                if retries >= len(nudges):
+                    raise
+                positions = []
+                probexy = list(nudges[retries])
+                retries += 1
+                gcmd.respond_info(
+                    "Probe point unusable (%s). Retrying at nudged"
+                    " (%.2f, %.2f)..." % (e, probexy[0], probexy[1]))
+                # Lift STRAIGHT UP before translating: a refused contact raises
+                # with the nozzle still touching, and a diagonal move from there
+                # drags the tip across the plate.
+                cur = toolhead.get_position()
+                lift_z = cur[2] + params['sample_retract_dist']
+                toolhead.manual_move([cur[0], cur[1], lift_z],
+                                     params['lift_speed'])
+                toolhead.manual_move(probexy + [lift_z], params['lift_speed'])
+                continue
             positions.append(pos)
             z_positions = [p.bed_z for p in positions]
             if max(z_positions) - min(z_positions) > params['samples_tolerance']:
@@ -427,6 +456,39 @@ class ResonanceProbe:
         # kept for A/B, not because it is better.
         self.verify_combine = config.getint('verify_combine', 1, minval=0,
                                             maxval=1)
+        # Second confirm criterion, OR'd with the ratio test, so it can only ADD
+        # confirmations - never remove one.  DEFAULT OFF, because the only thing
+        # it was ever measured to contribute was a false one: on 2026-08-06 it
+        # confirmed a contact 1.6mm above the bed (drop 1.77% against a 15%
+        # ratio threshold, step SNR 11.98) and that height went into a bed mesh.
+        # Every legitimate contact in the same run confirmed via ratio.  An OR'd
+        # criterion has to justify itself by cases it uniquely catches; this one
+        # has none on record.  Set >0 to re-enable.
+        self.verify_step_snr = config.getfloat('verify_step_snr', 0.,
+                                               minval=0.)
+        # Seconds to HOLD the nozzle in contact after the halt, before verify.
+        # With a hot nozzle this is what clears deposit off the tip: what
+        # removes it is contact TIME, not contact count, and holding beats
+        # repeated descents because the material has no chance to re-cool
+        # between touches.  Measured 2026-08-06 with a hot nozzle: successive
+        # contacts at one point decayed +64 -> +50 -> +44 -> +36um, and at
+        # another +26 -> +19 -> +8 -> +1um, converging as material was removed -
+        # the reading came back to baseline while the nozzle was STILL at 210C,
+        # so it is removal, not thermal expansion.  0 disables (the default: it
+        # is only useful when the nozzle is hot enough to melt what is there).
+        self.verify_contact_dwell = config.getfloat('verify_contact_dwell', 0.,
+                                                    minval=0., maxval=5.)
+        # A rejected candidate normally re-arms BELOW itself, which is right
+        # when a false halt sits above true contact.  It is exactly wrong when
+        # the rejection is because the amplitude ROSE on contact: at a location
+        # where the mode is weakly driven, touching can ADD signal instead of
+        # damping it, and then re-arming lower walks the nozzle toward a deep
+        # false contact.  Measured: rejections at -66%, -19% and -13% marched a
+        # descent from z=1.41 down past the true surface, over-pressing 0.282mm.
+        # A rise this large is evidence about the LOCATION, not about where
+        # contact is.  0 disables the check.
+        self.verify_rise_abort = config.getfloat('verify_rise_abort', 0.10,
+                                                 minval=0., below=1.)
         # Directory for automatic per-descent trace capture.  Every halting
         # descent writes one CSV (amplitude per axis vs mm below arming) plus a
         # metadata header, building a replay corpus.  Detector changes can then
@@ -445,6 +507,45 @@ class ResonanceProbe:
         # recorded after it.  Absence of the line means "not declared", which is
         # also what the 264 traces recorded before this option say.
         self.trace_note = config.get('trace_note', None)
+        # Refuse a contact whose excitation was far weaker than the rest of this
+        # probing session.  The mode's air response varies with bed position,
+        # and at a weak spot the descent can miss its halt entirely: measured on
+        # a 3x3 mesh (2026-08-06), X=60,Y=100 read ~40% down on every axis (z
+        # air 3162 against ~6000 elsewhere) while air NOISE stayed at 1-2%, so
+        # the spot was weak rather than noisy.  There the halt was missed,
+        # salvage over-pressed 0.282mm, and the point landed 345um below its
+        # neighbours.  Repeat sampling did NOT catch it: two touches from two
+        # different degraded paths agreed to 23um - inside samples_tolerance -
+        # because the error is systematic at that location, not random scatter.
+        # A consistency check cannot see this; the air level can, and the probe
+        # already measures it on every descent.
+        #
+        # Healthy points that same run held >=0.85 of the session median and the
+        # bad one sat at 0.60, so the default splits them.  0 disables.
+        self.min_air_fraction = config.getfloat('min_air_fraction', 0.7,
+                                                minval=0., below=1.)
+        # Air baselines of contacts accepted this session, for that comparison,
+        # keyed by the axis they were measured on (see last_baseline_axis).
+        self._air_history = {}
+        # Raised when the POINT is unusable (no contact, or a contact refused as
+        # unmeasurable) rather than the machine being in trouble.  A plain
+        # command error is indistinguishable from "must home first" or an MCU
+        # fault, so the nudging helper could not tell which failures are worth
+        # retrying somewhere else; this subclass makes that distinction without
+        # changing how any existing caller sees the failure.
+        self.point_error = type('ProbePointUnusable',
+                                (self.printer.command_error,), {})
+        # A rejected halt that lands on a contact ALREADY CONFIRMED at the same
+        # XY is not a false halt above contact - it is the same contact, and the
+        # verdict is what is wrong (a decayed air level makes a true touch read
+        # as a marginal drop).  Re-arming below it drives the nozzle through the
+        # plate: on 2026-08-07 a mesh point confirmed at z=0.0594, then its next
+        # sample halted at 0.0558, was rejected at -10% against a 15% threshold,
+        # re-armed, and plowed to -0.1495 before min_air_fraction stopped it.
+        # Contacts confirmed this session, keyed by rounded XY.
+        self._accepted_at = {}
+        self.verify_corroborate_tol = config.getfloat(
+            'verify_corroborate_tol', 0.05, minval=0.)
         # Part-fan speed saved while probing, restored afterwards.  See
         # _quiet_part_fan for why the part fan (but not the heatsink fan) must
         # be off for a measurement to mean anything.
@@ -644,6 +745,14 @@ class ResonanceProbe:
         # mutable session copy.  Without a mesh, retune the single scalar now.
         self._reported_freq = None
         self._retuned = set()
+        # The weak-excitation reference is per SESSION, not per klippy uptime:
+        # it must compare like with like.  A bed mesh is one session, so points
+        # are judged against their own run.  Carrying it further would judge a
+        # HOT probe against a COLD reference - and whether heating shifts the
+        # air response is not yet measured, so a stale reference could refuse
+        # every probe at temperature.
+        self._air_history = {}
+        self._accepted_at = {}
         # Before anything is measured, including the retune sweep below.
         self._quiet_part_fan(gcmd)
         if self.retune_range > 0. and self._freq_mesh is not None:
@@ -952,8 +1061,8 @@ class ResonanceProbe:
                 detected = True
                 break
         if not detected:
-            raise gcmd.error("Resonance probe: no contact detected down to the"
-                             " descent floor %.3f" % (z_floor,))
+            raise self.point_error("Resonance probe: no contact detected down"
+                                   " to the descent floor %.3f" % (z_floor,))
         offsets = self.probe_offsets.get_offsets()
         return manual_probe.create_probe_result(toolhead.get_position(),
                                                 offsets)
@@ -997,8 +1106,8 @@ class ResonanceProbe:
                 gcmd, ceiling, self.probe_distance, descend_speed, lift_speed,
                 start_speed, x0, y0)
         if contact_z is None:
-            raise gcmd.error("Resonance host-driven probe: no contact detected"
-                             " (halted=%s)" % (halted,))
+            raise self.point_error("Resonance host-driven probe: no contact"
+                                   " detected (halted=%s)" % (halted,))
         epos = list(toolhead.get_position())
         epos[2] = contact_z
         return manual_probe.create_probe_result(
@@ -1572,6 +1681,11 @@ class HaltingContactProbe:
         # better refined Z and for measuring the up/down bias.
         self._verify_reps = getattr(rp, 'verify_reps', 1) or 1
         self._verify_combine = getattr(rp, 'verify_combine', 1)
+        # Read from the live config rather than hardcoded here - a literal that
+        # shadows a configured value is a mistake this module has made before.
+        self._verify_step_snr = getattr(rp, 'verify_step_snr', 0.)
+        self._verify_rise_abort = getattr(rp, 'verify_rise_abort', 0.10)
+        self._verify_contact_dwell = getattr(rp, 'verify_contact_dwell', 0.)
         # Per-direction detail from the last verify, for reporting.
         self._verify_detail = {}
         self._descend_speed = 1.
@@ -2151,6 +2265,19 @@ class HaltingContactProbe:
         gap = gcmd.get_float("VERIFY_GAP", 0.15, above=0.)
         engage = gcmd.get_float("VERIFY_ENGAGE", 0.10, minval=0.)
         thresh = gcmd.get_float("VERIFY_DROP", 0.15, above=0., below=1.)
+        # Hoisted: the salvage path needs the same confirm bar as the normal
+        # one, and reading it in two places is how they drift apart.
+        step_min = gcmd.get_float("VERIFY_STEP_SNR", self._verify_step_snr,
+                                  minval=0.)
+        rise_abort = gcmd.get_float("VERIFY_RISE_ABORT",
+                                    self._verify_rise_abort, minval=0.,
+                                    below=1.)
+        # Salvaged contacts are verified like any other.  VERIFY_SALVAGE=0
+        # restores the old accept-without-checking behaviour for diagnosis.
+        verify_salvage = bool(gcmd.get_int("VERIFY_SALVAGE", 1))
+        contact_dwell = gcmd.get_float("VERIFY_CONTACT_DWELL",
+                                       self._verify_contact_dwell,
+                                       minval=0., maxval=5.)
         cur_ceiling = ceiling
         for _ in range(attempts):
             contact_z, halted = self._descend_once(
@@ -2161,9 +2288,41 @@ class HaltingContactProbe:
                 # giving up (see _salvage_on_rise).
                 z_sal = self._salvage_on_rise(gcmd, x0, y0, z_floor,
                                               lift_speed, thresh)
-                if z_sal is not None:
-                    return z_sal, True
-                return contact_z, halted
+                if z_sal is None:
+                    return contact_z, halted
+                # Salvage runs ONLY because the halt was already missed, so its
+                # result is the LAST one that should escape verification - and
+                # structurally it was the only one that did: this branch used to
+                # return here, before the verify block below ever ran.  A real
+                # mesh point was corrupted 345um that way (2026-08-06): the
+                # descent over-pressed 0.282mm, salvage recovered a height from
+                # the release ramp, and nothing ever checked it.
+                if verify_salvage:
+                    air_a, touch_a, refined, step_snr = \
+                        self._verify_contact_moving(gcmd, x0, y0, z_sal,
+                                                    lift_speed)
+                    okv, drop, how = self._verify_verdict(
+                        air_a, touch_a, step_snr, thresh, step_min)
+                    if not okv:
+                        self._tag_verify_outcome('rejected', drop, thresh,
+                                                 step_snr)
+                        gcmd.respond_info(
+                            "verify: REJECTED salvaged contact z=%.4f (air=%.0f"
+                            " touch=%.0f, %+.0f%% vs %.0f%%; step SNR %.1f, min"
+                            " %.1f).  Not re-arming below it: salvage only runs"
+                            " after an over-press, so it is already deep."
+                            % (z_sal, air_a, touch_a, -drop * 100.,
+                               thresh * 100., step_snr, step_min))
+                        toolhead.manual_move([x0, y0, ceiling], lift_speed)
+                        toolhead.wait_moves()
+                        return None, False
+                    if refined is not None:
+                        z_sal = refined
+                return self._accept_contact(gcmd, z_sal, x0, y0), True
+            if contact_dwell > 0.:
+                # _descend_once leaves the nozzle AT contact_z, so this is a
+                # press-and-hold on the platform.  See verify_contact_dwell.
+                toolhead.dwell(contact_dwell)
             if gcmd.get_int("VERIFY_MOVING", 1):
                 air_a, touch_a, refined, step_snr = \
                     self._verify_contact_moving(gcmd, x0, y0, contact_z,
@@ -2172,18 +2331,11 @@ class HaltingContactProbe:
                 air_a, touch_a, refined = self._verify_contact(
                     gcmd, x0, y0, contact_z, lift_speed, gap, engage)
                 step_snr = 0.   # stationary verify has no ramp to differentiate
-            drop = (air_a - touch_a) / air_a if air_a > 1e-9 else 0.
-            # Confirm on EITHER criterion.  The ratio is the established test;
-            # the step test catches the case that forced VERIFY_DROP down to 5%
-            # on this machine, where a real touch reads as a marginal ratio
-            # because the ramp is short and the medians blend air with contact.
-            # Both are computed from the same sweep, so this costs nothing.
-            step_min = gcmd.get_float("VERIFY_STEP_SNR", 8., minval=0.)
-            by_step = step_min > 0. and step_snr >= step_min
-            if drop >= thresh or by_step:
-                self._tag_verify_outcome(
-                    'confirmed', drop, thresh, step_snr,
-                    "ratio" if drop >= thresh else "step")
+            okv, drop, how = self._verify_verdict(air_a, touch_a, step_snr,
+                                                  thresh, step_min)
+            if okv:
+                self._tag_verify_outcome('confirmed', drop, thresh, step_snr,
+                                         how)
                 final_z = refined if refined is not None else contact_z
                 _dbg(gcmd,
                     "verify: CONFIRMED contact z=%.4f%s (air=%.0f contact=%.0f,"
@@ -2193,7 +2345,7 @@ class HaltingContactProbe:
                        if refined is not None else "",
                        air_a, touch_a, drop * 100., thresh * 100.,
                        step_snr, step_min,
-                       "ratio" if drop >= thresh else "step"))
+                       how))
                 d = self._verify_detail or {}
                 if d.get('bias') is not None:
                     # The up/down difference is the interesting number: a
@@ -2206,15 +2358,57 @@ class HaltingContactProbe:
                             d['up'], d['up_n'], d['up_spread'] * 1000.,
                             d['bias'] * 1000.,
                             " [combined]" if d.get('combined') else ""))
+                final_z = self._accept_contact(gcmd, final_z, x0, y0)
                 toolhead.manual_move([x0, y0, final_z], lift_speed)
                 toolhead.wait_moves()
                 return final_z, True
             self._tag_verify_outcome('rejected', drop, thresh, step_snr)
+            if self._is_inverted_rise(drop, rise_abort):
+                # Touching ADDED signal here.  That says the coupling at this
+                # location is inverted, not that contact lies further down, so
+                # descending below it walks toward a deep false contact - the
+                # mechanism that over-pressed 0.282mm into the plate.
+                gcmd.respond_info(
+                    "verify: amplitude ROSE %.0f%% on contact at z=%.4f"
+                    " (air=%.0f touch=%.0f).  That is inverted coupling at this"
+                    " location, not a false halt above contact, so NOT re-arming"
+                    " below it.  Move the point, or pick a mode with response"
+                    " here (RESONANCE_PROBE_RANK_FREQ)."
+                    % (-drop * 100., contact_z, air_a, touch_a))
+                toolhead.manual_move([x0, y0, ceiling], lift_speed)
+                toolhead.wait_moves()
+                return None, False
+            rp = self.printer.lookup_object('resonance_probe', None)
+            prior_z = None if rp is None else \
+                rp._accepted_at.get(self._xy_key(x0, y0))
+            if self._corroborated(contact_z, prior_z,
+                                  getattr(rp, 'verify_corroborate_tol', 0.)):
+                # Same XY already produced a CONFIRMED contact at this height,
+                # so this halt is that contact and the rejection is the thing in
+                # error - descending below it plows into the plate.  Fail the
+                # point instead: a mesh loses one point, where re-arming lost a
+                # 0.2mm gouge and the point too.
+                gcmd.respond_info(
+                    "verify: REJECTED halt z=%.4f (air=%.0f touch=%.0f, -%.0f%%"
+                    " < %.0f%%), but a contact was already CONFIRMED at this"
+                    " point at z=%.4f (within %.0fum).  This is that contact"
+                    " with a decayed air level, not a false halt above it, so"
+                    " NOT re-arming below it."
+                    % (contact_z, air_a, touch_a, drop * 100., thresh * 100.,
+                       prior_z, rp.verify_corroborate_tol * 1000.))
+                toolhead.manual_move([x0, y0, ceiling], lift_speed)
+                toolhead.wait_moves()
+                return None, False
             gcmd.respond_info(
                 "verify: REJECTED false halt z=%.4f (air=%.0f touch=%.0f,"
-                " -%.0f%% < %.0f%%; step SNR %.1f < %.1f); re-arming below it"
-                % (contact_z, air_a, touch_a, drop * 100., thresh * 100.,
+                " %+.0f%% vs %.0f%%; step SNR %.1f, min %.1f); re-arming"
+                " below it"
+                % (contact_z, air_a, touch_a, -drop * 100., thresh * 100.,
                    step_snr, step_min))
+            if prior_z is not None:
+                # Corroboration exists but this halt is above it: re-arming is
+                # still allowed, yet it must not walk PAST the known contact.
+                z_floor = max(z_floor, prior_z - rp.verify_corroborate_tol)
             cur_ceiling = contact_z - gap
             if cur_ceiling <= z_floor + 0.02:
                 break
@@ -2222,6 +2416,146 @@ class HaltingContactProbe:
         toolhead.manual_move([x0, y0, ceiling], lift_speed)
         toolhead.wait_moves()
         return None, False
+
+    # The confirm/reject decision, factored out so the salvage path and the
+    # normal path cannot drift apart - they did, and it cost a corrupted mesh
+    # point.  Pure arithmetic on already-measured numbers, so it is unit
+    # testable without a printer.
+    #
+    # Confirms on EITHER criterion: the ratio is the established test, and the
+    # step test catches a real touch whose ratio reads marginal because the ramp
+    # is short and the medians blend air with contact.
+    # Did the amplitude RISE on contact by enough to mean the coupling here is
+    # inverted, rather than that the halt was simply above true contact?  Kept
+    # separate from the verdict because the two answers drive different
+    # recoveries: a plain rejection re-arms lower, and this one must NOT.
+    @staticmethod
+    def _is_inverted_rise(drop, rise_abort):
+        return bool(rise_abort > 0. and drop <= -rise_abort)
+
+    @staticmethod
+    def _verify_verdict(air_a, touch_a, step_snr, thresh, step_min):
+        drop = (air_a - touch_a) / air_a if air_a > 1e-9 else 0.
+        by_ratio = drop >= thresh
+        by_step = step_min > 0. and step_snr >= step_min
+        return (by_ratio or by_step), drop, ("ratio" if by_ratio else "step")
+
+    # Decide whether the excitation on THIS descent was strong enough for its
+    # contact to be believed, by comparing its air baseline against the ones
+    # already accepted in this session.  Returns None to accept, or a reason.
+    #
+    # Deliberately a check on SIGNAL STRENGTH, not on agreement: two touches at
+    # a weak spot agree with each other (see min_air_fraction), so no amount of
+    # repeat sampling separates a systematic location error from a good reading.
+    #
+    # Needs a few accepted points before it can judge - the first probes of a
+    # session establish the reference, so a session that starts on a weak spot
+    # cannot be caught. Median, not mean, so one bad point cannot drag the
+    # reference down toward itself and mask the next one.
+    @staticmethod
+    def _air_reject_reason_axes(air_axes, histories, min_frac):
+        # Judge each channel against ITS OWN session history and refuse only
+        # when every channel is weak.  Measured on the 2026-08-06 mesh that
+        # corrupted a point: the bad descent read 0.65 of its best channel's
+        # reference while healthy ones sat at 1.0, and this refused 6 of 26
+        # there against 1 of 37 on 2026-08-07 - where reading the baseline off
+        # the triggering axis refused 12 of 37 purely because the axes sit at
+        # different absolute levels.
+        #
+        # The reference is only meaningful while the EXCITATION PARAMETERS hold
+        # still: it is an absolute amplitude, so halving accel_per_hz halves it.
+        # Replaying the corpus, every refusal in the two frequency-sweep sessions
+        # was a descent at accel_per_hz=60 judged against a 120/200 reference -
+        # the drive level changing, not the location.  Across the 304 descents
+        # recorded at constant parameters the refusal rate is 3.9%, and those are
+        # genuinely weak descents.  Nothing enforces this; changing freq or
+        # accel_per_hz mid-session invalidates the history.
+        if not min_frac:
+            return None                      # disabled
+        if air_axes is None:
+            return ("no air windows above the halt, so the contact could not be"
+                    " measured against one")
+        fracs = []
+        for ax, level in enumerate(air_axes):
+            hist = histories.get(ax, [])
+            if len(hist) < 3:
+                return None                  # no reference on this axis yet
+            ref = sorted(hist)[len(hist) // 2]
+            if ref > 0.:
+                fracs.append((level / ref, ax, level, ref))
+        if not fracs:
+            return None
+        best = max(fracs)
+        if best[0] >= min_frac:
+            return None
+        return ("air response is %.0f%% of this session's on its strongest"
+                " channel (%s: %.0f vs %.0f) and weaker on the others - the"
+                " excitation is too weak here to trust a contact (min %.0f%%)"
+                % (best[0] * 100., 'xyz'[best[1]], best[2], best[3],
+                   min_frac * 100.))
+
+    @staticmethod
+    def _air_reject_reason(baseline, history, min_frac):
+        if not min_frac:
+            return None                      # disabled
+        if len(history) < 3:
+            return None                      # no reference yet
+        ref = sorted(history)[len(history) // 2]
+        if ref <= 0.:
+            return None
+        if baseline is None:
+            # No plateau above the halt, so no drop could be measured at all and
+            # the returned Z came from the raw halt, which _contact_near_anchor
+            # documents as biased deep.  Unmeasurable is not the same as good.
+            return ("no air plateau above the halt, so the contact could not be"
+                    " measured against one (session reference %.0f)" % (ref,))
+        frac = baseline / ref
+        if frac < min_frac:
+            return ("air response %.0f is %.0f%% of this session's %.0f - the"
+                    " excitation is too weak here to trust a contact (min"
+                    " %.0f%%)" % (baseline, frac * 100., ref, min_frac * 100.))
+        return None
+
+    # Apply that check at the point a contact is about to be handed back as
+    # trustworthy.  Both accept paths in run() funnel through here, so salvage
+    # and a normal verified contact are held to the same bar - salvage most of
+    # all, since it only runs when the halt was already missed.
+    @staticmethod
+    def _xy_key(x0, y0):
+        return (round(x0, 1), round(y0, 1))
+
+    # Is this rejected halt sitting on a contact already confirmed at the same
+    # XY?  Pure arithmetic so it is testable without a printer.
+    @staticmethod
+    def _corroborated(z, prior_z, tol):
+        return bool(prior_z is not None and tol > 0.
+                    and abs(z - prior_z) <= tol)
+
+    def _accept_contact(self, gcmd, z, x0=None, y0=None):
+        rp = self.printer.lookup_object('resonance_probe', None)
+        if rp is None:
+            return z                          # standalone use, nothing to compare
+        # Every channel against its own history - see _air_reject_reason_axes.
+        air_axes = getattr(self, 'last_air_axes', None)
+        reason = self._air_reject_reason_axes(air_axes, rp._air_history,
+                                              rp.min_air_fraction)
+        if reason is not None:
+            raise rp.point_error(
+                "Resonance probe: refusing contact z=%.4f - %s.  Probing here"
+                " would silently corrupt the result (a weak spot reads LOW and"
+                " repeat touches agree with each other).  Move the point, pick a"
+                " mode with response at this location, or set min_air_fraction=0"
+                " to disable this check." % (z, reason))
+        if air_axes is not None:
+            for ax, level in enumerate(air_axes):
+                rp._air_history.setdefault(ax, []).append(level)
+        if x0 is not None and y0 is not None:
+            # Keep the SHALLOWEST confirmed contact at this XY: it is the one a
+            # later halt must not be allowed to descend past.
+            k = self._xy_key(x0, y0)
+            prev = rp._accepted_at.get(k)
+            rp._accepted_at[k] = z if prev is None else max(prev, z)
+        return z
 
     # Refine near the halt anchor for the drip descent, whose oscillation ramps
     # up slowly (the lookahead eases into the reversals).  The baseline is taken
@@ -2285,6 +2619,10 @@ class HaltingContactProbe:
     def _analyze_drip(self, gcmd, samples, anchor_t, anchor_z, z_floor,
                       armed_time, anchored=False, trigger_axis=None):
         import numpy as np
+        # Clear first: a stale air reading from the PREVIOUS descent would let
+        # the weak-excitation guard judge this contact on data that is not its
+        # own, and every early return below skips the measurement.
+        self.last_air_axes = None
         data = np.asarray(samples, dtype=np.float64)
         if len(data) < 8:
             return None
@@ -2299,6 +2637,7 @@ class HaltingContactProbe:
         # configured output_index for the un-halted (no trigger axis known)
         # full-stream search.
         axis_idx = trigger_axis if trigger_axis is not None else self.output_index
+        self.last_baseline_axis = axis_idx
         col = data[:, 1 + axis_idx]
         f = self.excitation_freq
         sps = _sample_rate(times)
@@ -2326,6 +2665,29 @@ class HaltingContactProbe:
         amps, zwin, twin = _window_amps(times, col, f, win_n, step_n, zpos)
         # Consider only windows after the warmup gate (skips the startup dwell).
         armed_k = [k for k in range(len(amps)) if twin[k] >= armed_time]
+        # Air level on EVERY channel, for the weak-excitation guard.  It must not
+        # be read off the triggering axis: the axes sit at very different
+        # absolute levels (x-triggered baselines ran a median 8758 against 3986
+        # for z on 2026-08-07), so a session that mixes trigger axes compares
+        # unlike things.  Replaying the 2026-08-06 mesh that corrupted a point,
+        # a per-axis history did no better - the weak region supplied 3 of the
+        # first 4 z baselines, so the reference normalised the weakness away and
+        # the bad point passed at 0.90.  Judging each channel against its OWN
+        # history and refusing only when ALL of them are weak catches it (0.65)
+        # while dropping false refusals to 1/37 on 2026-08-07 and 15/291 over
+        # the older sessions.  This is the first few windows after arming, i.e.
+        # the undisturbed air well above contact.
+        head = armed_k[:max(4, len(armed_k) // 8)]
+        if head:
+            self.last_air_axes = []
+            for ax in range(3):
+                a_ax = (amps if ax == axis_idx else
+                        _window_amps(times, data[:, 1 + ax], f, win_n, step_n,
+                                     zpos)[0])
+                self.last_air_axes.append(
+                    float(np.median([a_ax[k] for k in head])))
+        else:
+            self.last_air_axes = None
         if len(armed_k) < 4:
             gcmd.respond_info("drip: too few windows after warmup")
             return None
@@ -2384,6 +2746,7 @@ class HaltingContactProbe:
             # Halt sits near the top with no plateau above it - nothing to
             # measure a drop against; trust the halt position itself.
             self.last_baseline = self.last_rel_noise = self.last_max_drop = None
+            self.last_baseline_axis = None
             gcmd.respond_info("drip(anchored): no plateau above halt; using"
                               " halt z=%.4f" % (anchor_z,))
             return float(anchor_z)
