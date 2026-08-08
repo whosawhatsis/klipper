@@ -198,6 +198,40 @@ class ResonanceProbeCalibrate:
             order = order + [p for p in (prominence or []) if p in failed]
         return order
 
+    # The up/down ramp window around a contact height already found here.
+    #
+    # A point's contact height is learned ONCE, by the slow descent that finds
+    # it; every later candidate at that point - and every candidate on a revisit
+    # pass - is characterised by ramping around that height instead of descending
+    # again.  That is what makes re-testing cheap: the descent is the expensive
+    # part, the ramps are not.
+    #
+    # Reusing a height across MODES is fine: press depth is a mode property
+    # (~0.73um/Hz here), so the same surface reads a few tens of microns
+    # differently at another frequency, against a window of 0.15mm up and 0.25mm
+    # down.  It is the ramp CENTRE, never a contact value.
+    #
+    # The down leg is the risk: it descends below a height nothing has just
+    # verified, so a stale height (plate moved, thermal drift, a bad home) is a
+    # crash.  Hence the hard clamp to z_min, and hence a caller must treat "the
+    # ramp found no contact" as grounds to re-descend rather than to conclude
+    # the pair failed.  Returns (z_hi, z_lo), or None when the clamp leaves no
+    # usable window - which is itself a signal that the stored height is suspect.
+    #
+    # "Usable" is about PRESS ROOM below the contact, not total span: the ramp
+    # has to get meaningfully under the surface to measure the pressed state, so
+    # a window clamped down to the stored height itself is worthless even though
+    # it is 0.15mm tall.
+    @staticmethod
+    def contact_ramp_window(stored_z, up, down, z_min, min_press=0.05):
+        if stored_z is None:
+            return None
+        z_hi = stored_z + up
+        z_lo = max(z_min, stored_z - down)
+        if stored_z - z_lo < min_press or z_hi <= stored_z:
+            return None
+        return (z_hi, z_lo)
+
     # What to go back and re-test after a pruned first pass.
     #
     # Pruning is safe as long as it is REVERSIBLE.  Running the first pass with
