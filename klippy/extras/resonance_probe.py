@@ -327,12 +327,34 @@ class _NudgingSampleAveragingHelper(probe.SampleAveragingHelper):
         retries = 0
         positions = []
         sample_count = params['samples']
-        rp = self.printer.lookup_object('resonance_probe', None)
-        point_error = getattr(rp, 'point_error', ())
+        # Reach the probe through the bound callback we were constructed with,
+        # NOT through lookup_object('resonance_probe'): the object is registered
+        # under 'probe', and whether the section name also resolves depends on
+        # how the config was loaded.  A miss there silently yields an empty
+        # exception tuple, so `except ()` catches nothing and the nudge never
+        # runs - which is exactly what happened on the first hardware run of
+        # this path (2026-08-07), with no error to show for it.
+        # Reach the probe through the bound callback we were constructed with -
+        # no name lookup to get wrong - and detect an unprobeable point by the
+        # flag it sets, because upstream's _probe() re-raises a plain
+        # command_error and destroys the exception class on the way out.
+        rp = getattr(self.start_session_cb, '__self__', None)
+        if not hasattr(rp, 'point_failure'):
+            gcmd.respond_info(
+                "probe: nudge-on-unusable is INACTIVE (%s has no point_failure)"
+                " - an unprobeable point will end the run instead of moving off"
+                " it" % (type(rp).__name__,))
+        else:
+            _dbg(gcmd, "probe: nudge ring armed, %d positions at r=%.2fmm"
+                       % (len(nudges), self.nudge_radius))
         while len(positions) < sample_count:
             try:
+                if rp is not None:
+                    rp._point_unusable = False
                 pos = self._probe(gcmd)
-            except point_error as e:
+            except self.printer.command_error as e:
+                if not getattr(rp, '_point_unusable', False):
+                    raise            # a machine problem, not a bad point
                 # The POINT is unusable, not the machine: no contact found, or a
                 # contact the probe refuses to measure (weak excitation, or a
                 # halt that corroborates an already-confirmed contact so it may
@@ -535,6 +557,13 @@ class ResonanceProbe:
         # changing how any existing caller sees the failure.
         self.point_error = type('ProbePointUnusable',
                                 (self.printer.command_error,), {})
+        # ...but the class alone cannot carry the signal: upstream's
+        # SampleAveragingHelper._probe catches command_error and re-raises a
+        # PLAIN command_error(str(e)), flattening any subclass.  So the fact
+        # travels out of band as well.  Set immediately before the raise and
+        # read immediately in the handler, on a single-threaded reactor, with a
+        # clear at the start of every probe so it can never be read stale.
+        self._point_unusable = False
         # A rejected halt that lands on a contact ALREADY CONFIRMED at the same
         # XY is not a false halt above contact - it is the same contact, and the
         # verdict is what is wrong (a decayed air level makes a true touch read
@@ -674,6 +703,14 @@ class ResonanceProbe:
         self.printer.add_object('probe', self)
 
     # Probe interface used by ProbeCommandHelper / bed mesh / PROBE
+    # Raise this for a point that cannot be probed, as opposed to a machine that
+    # is in trouble.  Always `raise rp.point_failure(...)`, never the bare class:
+    # upstream flattens the class on its way out, so the flag is what the nudge
+    # handler actually sees.
+    def point_failure(self, msg):
+        self._point_unusable = True
+        return self.point_error(msg)
+
     def get_probe_params(self, gcmd=None):
         return self.param_helper.get_probe_params(gcmd)
     def get_offsets(self, gcmd=None):
@@ -1061,7 +1098,7 @@ class ResonanceProbe:
                 detected = True
                 break
         if not detected:
-            raise self.point_error("Resonance probe: no contact detected down"
+            raise self.point_failure("Resonance probe: no contact detected down"
                                    " to the descent floor %.3f" % (z_floor,))
         offsets = self.probe_offsets.get_offsets()
         return manual_probe.create_probe_result(toolhead.get_position(),
@@ -1106,7 +1143,7 @@ class ResonanceProbe:
                 gcmd, ceiling, self.probe_distance, descend_speed, lift_speed,
                 start_speed, x0, y0)
         if contact_z is None:
-            raise self.point_error("Resonance host-driven probe: no contact"
+            raise self.point_failure("Resonance host-driven probe: no contact"
                                    " detected (halted=%s)" % (halted,))
         epos = list(toolhead.get_position())
         epos[2] = contact_z
@@ -2410,6 +2447,27 @@ class HaltingContactProbe:
                 # still allowed, yet it must not walk PAST the known contact.
                 z_floor = max(z_floor, prior_z - rp.verify_corroborate_tol)
             cur_ceiling = contact_z - gap
+            # That clamp can leave less travel than a descent needs to measure
+            # anything.  Measured 2026-08-07: a rejection at z=0.1183 put the
+            # ceiling at -0.0317 and the clamped floor at -0.1291 - 0.097mm of
+            # travel, when the warm-up alone consumes 0.16mm at 0.2mm/s.  The
+            # descent ran 2 windows, found nothing, and the point failed as if
+            # the bed were out of reach.  A descent that cannot succeed should
+            # not be attempted: fail the point here, where a mesh can nudge off
+            # it, and say why.
+            need = self._min_descent_span(descend_speed, self.warmup,
+                                          self.detect_cycles,
+                                          self.excitation_freq)
+            if cur_ceiling - z_floor < need:
+                toolhead.manual_move([x0, y0, ceiling], lift_speed)
+                toolhead.wait_moves()
+                raise (rp.point_failure if rp is not None else gcmd.error)(
+                    "Resonance probe: cannot re-arm below z=%.4f - only %.3fmm"
+                    " of travel left above the floor (%.3fmm) and a descent"
+                    " needs %.3fmm to measure.  A contact confirmed at z=%.4f"
+                    " here is what limits the floor."
+                    % (contact_z, cur_ceiling - z_floor, z_floor, need,
+                       prior_z if prior_z is not None else float('nan')))
             if cur_ceiling <= z_floor + 0.02:
                 break
         gcmd.respond_info("verify: no confirmed contact above the floor")
@@ -2524,6 +2582,14 @@ class HaltingContactProbe:
     def _xy_key(x0, y0):
         return (round(x0, 1), round(y0, 1))
 
+    # The shortest descent that can still measure a contact: the warm-up runway
+    # (during which the excitation is still ramping and no window counts) plus
+    # a few detection windows.  Below this a descent is not a weak measurement,
+    # it is no measurement - it reports "no contact" wherever the bed is.
+    @staticmethod
+    def _min_descent_span(speed, warmup, cycles, freq):
+        return speed * (warmup + 4. * cycles / max(freq, 1e-9))
+
     # Is this rejected halt sitting on a contact already confirmed at the same
     # XY?  Pure arithmetic so it is testable without a printer.
     @staticmethod
@@ -2540,7 +2606,7 @@ class HaltingContactProbe:
         reason = self._air_reject_reason_axes(air_axes, rp._air_history,
                                               rp.min_air_fraction)
         if reason is not None:
-            raise rp.point_error(
+            raise rp.point_failure(
                 "Resonance probe: refusing contact z=%.4f - %s.  Probing here"
                 " would silently corrupt the result (a weak spot reads LOW and"
                 " repeat touches agree with each other).  Move the point, pick a"
