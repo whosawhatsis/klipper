@@ -166,13 +166,23 @@ class ResonanceProbeCalibrate:
     # arbitrary, and every point measured replaces more of it with real data.
     #
     # Proven-decent first (exploit what is known to work), then untried pairs in
-    # prominence order (the prior), then pairs already known to be weak - those
-    # detect, so they are still worth a try if nothing better lands, but they go
-    # last.  Failed pairs are dropped entirely while hunting for one global
-    # setting, and kept when per-point settings are allowed.
+    # prominence order (the prior), then pairs already measured weak, then pairs
+    # that have missed somewhere.
+    #
+    # NOTHING IS ELIMINATED BY DEFAULT.  Dropping a pair after one miss presumes
+    # the very thing the survey is run to find out: if the answer turns out to be
+    # "per-point settings are needed", a pruned pair may have been the best
+    # available at a point it was never tried at, and that data no longer exists.
+    # Pruning also buys little - the expensive step is the contact-find DESCENT,
+    # once per point; characterising further pairs afterwards is up/down ramps at
+    # a contact height already known.  So a miss only costs a pair its place in
+    # the queue.
+    #
+    # prune_failed=True is the opt-in for "I only care about one global setting
+    # and want it fast", and it forfeits the per-point answer.
     @staticmethod
     def candidate_order(history, prominence, min_drop, target_noise,
-                        min_margin=1.0, allow_per_point=False):
+                        min_margin=1.0, prune_failed=False):
         ranked, _failed = ResonanceProbeCalibrate.rank_candidate_pairs(
             history, min_drop, target_noise, min_margin)
         failed = ResonanceProbeCalibrate.failed_pairs(history)
@@ -181,10 +191,10 @@ class ResonanceProbeCalibrate:
         tested = set(decent) | set(weak) | failed
         untried = [p for p in (prominence or []) if p not in tested]
         order = decent + untried + weak
-        if allow_per_point:
+        if not prune_failed:
             # A pair that missed here may be the best thing available at the
-            # next point, so it stays in the running - last, since it has an
-            # actual miss against it.
+            # next point, so it stays in the running - last, because it has an
+            # actual miss against it, but present.
             order = order + [p for p in (prominence or []) if p in failed]
         return order
 
