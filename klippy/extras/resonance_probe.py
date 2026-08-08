@@ -2459,15 +2459,28 @@ class HaltingContactProbe:
                                           self.detect_cycles,
                                           self.excitation_freq)
             if cur_ceiling - z_floor < need:
+                # Out of usable travel.  Stop re-arming, but return the SAME
+                # "no contact" result a failed descent gives rather than
+                # raising: callers already handle that well (a mesh point goes
+                # to the nudge ring, RANK_FREQ retries and escalates to another
+                # frequency), and raising here turned a recoverable step into a
+                # hard abort of the whole command - observed 2026-08-07 when a
+                # ranking at (100,25) died over a ONE MICRON shortfall.
+                #
+                # Name the real limit: it is the configured floor unless a
+                # confirmed contact at this point raised it.
+                limit = ("a contact confirmed at z=%.4f" % prior_z
+                         if prior_z is not None
+                         and z_floor > self.z_min + 1e-9
+                         else "the descent floor")
+                gcmd.respond_info(
+                    "probe: not re-arming below z=%.4f - only %.3fmm of travel"
+                    " left above %s (%.3fmm) and a descent needs %.3fmm to"
+                    " measure"
+                    % (contact_z, cur_ceiling - z_floor, limit, z_floor, need))
                 toolhead.manual_move([x0, y0, ceiling], lift_speed)
                 toolhead.wait_moves()
-                raise (rp.point_failure if rp is not None else gcmd.error)(
-                    "Resonance probe: cannot re-arm below z=%.4f - only %.3fmm"
-                    " of travel left above the floor (%.3fmm) and a descent"
-                    " needs %.3fmm to measure.  A contact confirmed at z=%.4f"
-                    " here is what limits the floor."
-                    % (contact_z, cur_ceiling - z_floor, z_floor, need,
-                       prior_z if prior_z is not None else float('nan')))
+                return None, False
             if cur_ceiling <= z_floor + 0.02:
                 break
         gcmd.respond_info("verify: no confirmed contact above the floor")
