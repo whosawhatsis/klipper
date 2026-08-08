@@ -198,6 +198,32 @@ class ResonanceProbeCalibrate:
             order = order + [p for p in (prominence or []) if p in failed]
         return order
 
+    # Record one pair's result at one point - the ONLY sanctioned way into the
+    # history the ranking reads.
+    #
+    # A characterisation is worth exactly as much as the contact it was measured
+    # against.  If the contact was not confirmed, the numbers describe whatever
+    # the nozzle was actually near - often nothing - and must not enter the
+    # history at all:
+    #
+    #   confirmed contact + detection      -> the measurement
+    #   confirmed contact + no detection   -> None, a genuine miss for that pair
+    #   UNCONFIRMED contact                -> nothing recorded, no data
+    #
+    # Recording an unconfirmed reading as a miss is the trap, because a miss is
+    # fatal to a pair: on 2026-08-07 five rankings at (60,100) were computed at
+    # false contacts and reported the configured mode at 0.0-0.3x detectability.
+    # That was read as "this mode is dead here", and a per-location frequency
+    # theory was built on it.  Re-measured against confirmed contacts (z within
+    # 10um across three runs) the same mode scores 0.9-1.5x and detects fine.
+    # The mode was never the problem; the contact-find was.
+    @staticmethod
+    def record_result(history, point, pair, value, contact_confirmed):
+        if not contact_confirmed:
+            return False
+        history.setdefault(point, {})[pair] = value
+        return True
+
     # The up/down ramp window around a contact height already found here.
     #
     # A point's contact height is learned ONCE, by the slow descent that finds
