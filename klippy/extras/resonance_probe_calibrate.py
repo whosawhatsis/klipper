@@ -156,6 +156,38 @@ class ResonanceProbeCalibrate:
         ranked.sort(key=lambda e: (-e[1], -e[2], e[0]))
         return ranked, failed
 
+    # The order to TRY pairs at the next point.
+    #
+    # The first point has no contact data at all, so the only prior available is
+    # the in-air sweep's prominence order - which is why that is the seed and
+    # not the answer: air prominence has repeatedly failed to predict contact
+    # detectability on this machine (the mode this probe uses was chosen at 18.6
+    # detectability against 2.6 for the loudest in air).  It just has to beat
+    # arbitrary, and every point measured replaces more of it with real data.
+    #
+    # Proven-decent first (exploit what is known to work), then untried pairs in
+    # prominence order (the prior), then pairs already known to be weak - those
+    # detect, so they are still worth a try if nothing better lands, but they go
+    # last.  Failed pairs are dropped entirely while hunting for one global
+    # setting, and kept when per-point settings are allowed.
+    @staticmethod
+    def candidate_order(history, prominence, min_drop, target_noise,
+                        min_margin=1.0, allow_per_point=False):
+        ranked, _failed = ResonanceProbeCalibrate.rank_candidate_pairs(
+            history, min_drop, target_noise, min_margin)
+        failed = ResonanceProbeCalibrate.failed_pairs(history)
+        decent = [r[0] for r in ranked if r[3]]
+        weak = [r[0] for r in ranked if not r[3]]
+        tested = set(decent) | set(weak) | failed
+        untried = [p for p in (prominence or []) if p not in tested]
+        order = decent + untried + weak
+        if allow_per_point:
+            # A pair that missed here may be the best thing available at the
+            # next point, so it stays in the running - last, since it has an
+            # actual miss against it.
+            order = order + [p for p in (prominence or []) if p in failed]
+        return order
+
     # Pairs with a recorded miss, i.e. not worth retrying while searching for a
     # SINGLE global setting.  Callers allowing per-point settings must ignore
     # this and keep trying everything everywhere.
