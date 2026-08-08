@@ -681,7 +681,10 @@ class ResonanceProbeCalibrate:
                 gcmd.respond_info(
                     "Mode %.1fHz: characterization failed (%s) - recording as"
                     " no usable reading" % (fq, str(e)))
-                ranked.append((fq, 0., 1., 0., '?'))
+                # Same arity as the success path below (…, axis, profile) - the
+                # two drifted apart and _accept_ranked_contact, which unpacked
+                # five, then died on any run where a candidate SUCCEEDED.
+                ranked.append((fq, 0., 1., 0., '?', None))
                 continue
             drop = m['max_drop']
             noise = m['rel_noise']
@@ -1347,7 +1350,9 @@ class ResonanceProbeCalibrate:
     # damping but nothing clean -> caller's best-effort / nudge path.  Shared by
     # the RANK_FREQ finder and the CALIBRATE_MESH _mode_low_first finder.
     def _accept_ranked_contact(self, trial, min_drop, target_noise):
-        best_drop = max((d for (_f, d, _n, _s, _a) in trial), default=0.)
+        # Index rather than unpack: entries carry a trailing profile that this
+        # function has no use for, and destructuring made the arity a trap.
+        best_drop = max((e[1] for e in trial), default=0.)
         clean = [e for e in trial
                  if e[1] >= min_drop and e[2] <= target_noise]
         if clean:
@@ -1458,8 +1463,7 @@ class ResonanceProbeCalibrate:
                     break
                 # 'weak': some real damping but nothing clean - keep as an
                 # unverified best-effort only if nothing better ever turns up.
-                if ranked is None or pick[1] > max(
-                        d for (_f, d, _n, _s, _a) in ranked):
+                if ranked is None or pick[1] > max(e[1] for e in ranked):
                     contact_z, ranked, ambiguous = cz, trial, True
                 gcmd.respond_info(
                     "Mode select: contact at z=%.4f shows some damping (best"
