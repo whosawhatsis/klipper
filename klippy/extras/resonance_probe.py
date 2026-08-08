@@ -2625,9 +2625,21 @@ class HaltingContactProbe:
         rp = self.printer.lookup_object('resonance_probe', None)
         if rp is None:
             return z                          # standalone use, nothing to compare
-        # Every channel against its own history - see _air_reject_reason_axes.
+        # Every channel against its own history - see _air_reject_reason_axes -
+        # and only against history measured at the SAME excitation frequency.
+        # The air level is an absolute amplitude, so it is not comparable across
+        # frequencies: modes differ several-fold in how hard they drive.  Keyed
+        # by axis alone, a command that tries several frequencies at one point
+        # judges a weak mode against a strong mode's reference and refuses every
+        # contact.  That is not hypothetical - it is exactly how
+        # RESONANCE_PROBE_RANK_FREQ failed on 2026-08-07 at (60,100): three runs
+        # refused at 42%, 54% and 46% of a reference set by a different mode,
+        # while the contacts themselves agreed to 3um.
+        # (klippy on this host is Python 3.7 - no walrus, no f-strings)
+        fkey = round(self.excitation_freq, 1)
+        hist = rp._air_history.setdefault(fkey, {})
         air_axes = getattr(self, 'last_air_axes', None)
-        reason = self._air_reject_reason_axes(air_axes, rp._air_history,
+        reason = self._air_reject_reason_axes(air_axes, hist,
                                               rp.min_air_fraction)
         if reason is not None:
             raise rp.point_failure(
@@ -2638,7 +2650,7 @@ class HaltingContactProbe:
                 " to disable this check." % (z, reason))
         if air_axes is not None:
             for ax, level in enumerate(air_axes):
-                rp._air_history.setdefault(ax, []).append(level)
+                hist.setdefault(ax, []).append(level)
         if x0 is not None and y0 is not None:
             # Keep the SHALLOWEST confirmed contact at this XY: it is the one a
             # later halt must not be allowed to descend past.
