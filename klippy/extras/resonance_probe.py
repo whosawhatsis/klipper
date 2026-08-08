@@ -2578,9 +2578,14 @@ class HaltingContactProbe:
     # trustworthy.  Both accept paths in run() funnel through here, so salvage
     # and a normal verified contact are held to the same bar - salvage most of
     # all, since it only runs when the halt was already missed.
-    @staticmethod
-    def _xy_key(x0, y0):
-        return (round(x0, 1), round(y0, 1))
+    # Keyed by frequency as well as position.  Press depth is a property of the
+    # MODE (~0.73um/Hz), so a contact confirmed at one frequency does not bound
+    # where a different frequency may descend at the same spot.  Ignoring that
+    # broke RESONANCE_PROBE_RANK_FREQ, which exists precisely to try several
+    # frequencies at one point: the first candidate's contact clamped the floor
+    # for the rest and the ranking aborted (2026-08-07).
+    def _xy_key(self, x0, y0):
+        return (round(x0, 1), round(y0, 1), round(self.excitation_freq, 1))
 
     # The shortest descent that can still measure a contact: the warm-up runway
     # (during which the excitation is still ramping and no window counts) plus
@@ -2590,12 +2595,18 @@ class HaltingContactProbe:
     def _min_descent_span(speed, warmup, cycles, freq):
         return speed * (warmup + 4. * cycles / max(freq, 1e-9))
 
-    # Is this rejected halt sitting on a contact already confirmed at the same
-    # XY?  Pure arithmetic so it is testable without a printer.
+    # Is this rejected halt sitting on - or below - a contact already confirmed
+    # at the same point and frequency?  Anything at or under that contact is the
+    # same touch or deeper, so re-arming below it presses into the plate; only a
+    # halt clearly ABOVE it is the false-halt case re-arming exists for.
+    #
+    # Not a symmetric window: an earlier version tested abs(z - prior_z) <= tol,
+    # which let a halt 65um BELOW a confirmed contact fall through to the re-arm
+    # path, where the clamped floor then sat above the ceiling and produced a
+    # NEGATIVE travel span (observed 2026-08-07: "only -0.165mm of travel left").
     @staticmethod
     def _corroborated(z, prior_z, tol):
-        return bool(prior_z is not None and tol > 0.
-                    and abs(z - prior_z) <= tol)
+        return bool(prior_z is not None and tol > 0. and z <= prior_z + tol)
 
     def _accept_contact(self, gcmd, z, x0=None, y0=None):
         rp = self.printer.lookup_object('resonance_probe', None)
