@@ -211,12 +211,17 @@ class ResonanceProbeCalibrate:
     # differently at another frequency, against a window of 0.15mm up and 0.25mm
     # down.  It is the ramp CENTRE, never a contact value.
     #
-    # The down leg is the risk: it descends below a height nothing has just
-    # verified, so a stale height (plate moved, thermal drift, a bad home) is a
-    # crash.  Hence the hard clamp to z_min, and hence a caller must treat "the
-    # ramp found no contact" as grounds to re-descend rather than to conclude
-    # the pair failed.  Returns (z_hi, z_lo), or None when the clamp leaves no
-    # usable window - which is itself a signal that the stored height is suspect.
+    # THE PLATE IS ASSUMED FIXED for the duration of a calibration - if it moves,
+    # the calibration is invalid anyway, so a stale height is not a failure mode
+    # worth designing around.  That has a direct consequence for the caller: a
+    # ramp that finds no contact means THE CANDIDATE DID NOT DETECT, and must be
+    # recorded as that pair's failure at that point.  Do not re-descend "in case
+    # the height drifted" - that mis-attributes a real result and spends the
+    # expensive step to learn nothing.
+    #
+    # z_min is still clamped, as the configured hard floor that bounds any
+    # descent - it guards against a bug here, not against the plate moving.
+    # Returns (z_hi, z_lo), or None when the clamp leaves no room to press.
     #
     # "Usable" is about PRESS ROOM below the contact, not total span: the ramp
     # has to get meaningfully under the surface to measure the pressed state, so
