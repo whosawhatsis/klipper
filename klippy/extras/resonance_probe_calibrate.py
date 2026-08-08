@@ -2396,6 +2396,37 @@ class ResonanceProbeCalibrate:
                         margin=contact_margin, travel=travel_speed,
                         vib_span=vib_span, drip_time=drip_time,
                         excite_amp=excite_amp, high_first=high_first)
+            # Still nothing from the committed mode or its drift window: try the
+            # OTHER modes here before moving the nozzle.  Measured 2026-08-07,
+            # this bed's mode ORDERING changes with position - at (60,100) the
+            # configured mode reaches 0.0-0.3x detectability while another mode
+            # manages 0.6-1.0x - so a miss is often not drift of one mode but a
+            # different mode owning that location.  Trying a frequency is free;
+            # a nudge spends plate wear and moves off the point being measured,
+            # and cannot help at all when the cause is a mode node metres wide
+            # in frequency terms rather than a bad patch of surface.  On the
+            # same date (60,100) burned 46 minutes on four nudges having never
+            # tried a second frequency, and produced nothing.
+            widen = [c for c in candidates
+                     if all(abs(c - p) > 0.05 for p in point_candidates)]
+            if not clean and widen and gcmd.get_int("WIDEN_ON_MISS", 1):
+                gcmd.respond_info(
+                    "    no clean detection at %.1f Hz; trying the other modes"
+                    " here before nudging: %s Hz"
+                    % (primary_freq, ", ".join("%.1f" % c for c in widen)))
+                wf, wcz, wclean = self._mode_low_first(
+                    gcmd, chip, out_idx, axis, x, y, widen, mesh_z, cap,
+                    z_min, warmup, speed, lift, up_margin, down_margin,
+                    cycles, min_drop, target_noise, margin=contact_margin,
+                    travel=travel_speed, vib_span=vib_span,
+                    drip_time=drip_time, excite_amp=excite_amp,
+                    high_first=high_first)
+                if wclean:
+                    f, cz, clean = wf, wcz, True
+                    point_candidates = widen
+                    gcmd.respond_info(
+                        "    resolved with a DIFFERENT mode here: %.1f Hz"
+                        " (mesh primary is %.1f Hz)" % (wf, primary_freq))
             # No clean detection at the exact grid point (low-friction / marginal
             # spot: a weak or spurious drop, and a shallow false halt can even
             # hand the win to a bad high mode).  Nudge ~1mm off the point to
