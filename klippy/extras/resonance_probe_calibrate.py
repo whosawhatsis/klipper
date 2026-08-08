@@ -198,6 +198,59 @@ class ResonanceProbeCalibrate:
             order = order + [p for p in (prominence or []) if p in failed]
         return order
 
+    # What to go back and re-test after a pruned first pass.
+    #
+    # Pruning is safe as long as it is REVERSIBLE.  Running the first pass with
+    # prune_failed=True is the fast hunt for one global setting; if it ends with
+    # points that nothing decent covers, those points were also denied the pairs
+    # that had been pruned - so revisit exactly those points with exactly those
+    # untried pairs, rather than repeating the whole survey.
+    #
+    # A point is UNRESOLVED when nothing tried there came back decent: either
+    # everything missed, or everything that detected was weak.  Both are worth
+    # a second look, because a pair pruned for missing somewhere else may be the
+    # one that works here - measured on this bed, the mode that reaches 1.8-2.5x
+    # at (100,25) manages 0.0-0.3x at (60,100), and vice versa.
+    #
+    # Returns {point: [pairs to try there]}, each list ordered by how the pair
+    # performed elsewhere (best worst-case first), then by prominence for pairs
+    # with no data at all.  Empty dict means every point is covered.
+    @staticmethod
+    def revisit_plan(history, all_pairs, min_drop, target_noise,
+                     min_margin=1.0, prominence=None):
+        ranked, _failed = ResonanceProbeCalibrate.rank_candidate_pairs(
+            history, min_drop, target_noise, min_margin)
+        # How well each pair did anywhere it was measured, for ordering retries.
+        best_elsewhere = {}
+        for pt, res in (history or {}).items():
+            for pair, val in (res or {}).items():
+                if val is None:
+                    continue
+                m = val[2]
+                if pair not in best_elsewhere or m > best_elsewhere[pair]:
+                    best_elsewhere[pair] = m
+        prom_rank = {p: i for i, p in enumerate(prominence or [])}
+        plan = {}
+        for pt, res in (history or {}).items():
+            res = res or {}
+            resolved = False
+            for pair, val in res.items():
+                if val is None:
+                    continue
+                drop, noise, margin = val
+                if (drop >= min_drop and noise <= target_noise
+                        and margin >= min_margin):
+                    resolved = True
+                    break
+            if resolved:
+                continue
+            untried = [p for p in (all_pairs or []) if p not in res]
+            if untried:
+                untried.sort(key=lambda p: (-best_elsewhere.get(p, -1.),
+                                            prom_rank.get(p, 1 << 30)))
+                plan[pt] = untried
+        return plan
+
     # Pairs with a recorded miss, i.e. not worth retrying while searching for a
     # SINGLE global setting.  Callers allowing per-point settings must ignore
     # this and keep trying everything everywhere.
