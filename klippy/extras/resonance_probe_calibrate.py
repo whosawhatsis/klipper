@@ -93,6 +93,81 @@ class ResonanceProbeCalibrate:
                 "RESONANCE_PROBE_DUMP_TRACE", self.cmd_DUMP_TRACE,
                 desc=self.cmd_DUMP_TRACE_help)
 
+    # Rank (frequency, amplitude) pairs across every point measured so far.
+    #
+    # The objective is MINIMAX, not best-average: a mesh needs one setting that
+    # works at every point, so a pair that fails anywhere is worthless no matter
+    # how well it scores elsewhere.  Measured 2026-08-07: at (60,100) the
+    # configured mode reached 0.0-0.3x detectability while scoring 1.8-2.5x at
+    # (100,25) - averaging those would have chosen the setting that cannot probe
+    # part of the bed, which is how the mesh has been failing.
+    #
+    # 'history' is {point: {(freq, aph): (drop, noise, margin) or None}}, where
+    # None records a pair that was TRIED and did not detect at all.
+    #
+    # Two different judgements, deliberately kept apart:
+    #
+    #   FAILURE is fatal.  A pair that missed anywhere cannot be the single
+    #   global setting, and while searching for one there is no point spending
+    #   descents on it at later points either (see failed_pairs()).  When
+    #   per-point settings are allowed it must still be tried everywhere: a pair
+    #   that misses at one location may be the best available at another, which
+    #   is measurably true on this bed.
+    #
+    #   WEAKNESS is not fatal, it is data.  A weak-but-detecting pair stays in
+    #   the running and keeps being measured; only the final comparison cares
+    #   how weak its worst point was.  Pruning on weakness would discard the
+    #   candidate that turns out to be the only one that works somewhere.
+    #
+    # Returns (ranked, failed).  ranked is
+    #   [((freq, aph), worst_margin, n_points, decent_everywhere, worst_point)]
+    # ordered by worst case, and includes weak pairs with decent_everywhere
+    # False.  failed is [((freq, aph), point)] for pairs with a recorded miss.
+    # If nothing comes back decent_everywhere, no single setting covers the bed
+    # and per-point settings are required - that is the answer, not an error.
+    #
+    # Pure arithmetic on already-measured numbers, so it is unit testable
+    # without a printer - which matters because it decides what the whole
+    # calibration commits to.
+    @staticmethod
+    def rank_candidate_pairs(history, min_drop, target_noise, min_margin=1.0):
+        tested = {}
+        for pt, res in (history or {}).items():
+            for pair, val in (res or {}).items():
+                tested.setdefault(pair, {})[pt] = val
+        ranked, failed = [], []
+        for pair in sorted(tested):
+            miss = [pt for pt in sorted(tested[pair]) if tested[pair][pt] is None]
+            if miss:
+                failed.append((pair, miss[0]))
+                continue
+            worst_margin, worst_pt, decent = None, None, True
+            for pt in sorted(tested[pair]):
+                drop, noise, margin = tested[pair][pt]
+                if (drop < min_drop or noise > target_noise
+                        or margin < min_margin):
+                    decent = False
+                if worst_margin is None or margin < worst_margin:
+                    worst_margin, worst_pt = margin, pt
+            if worst_margin is not None:
+                ranked.append((pair, worst_margin, len(tested[pair]),
+                               decent, worst_pt))
+        # Best worst-case first; ties go to the pair proven at more points.
+        ranked.sort(key=lambda e: (-e[1], -e[2], e[0]))
+        return ranked, failed
+
+    # Pairs with a recorded miss, i.e. not worth retrying while searching for a
+    # SINGLE global setting.  Callers allowing per-point settings must ignore
+    # this and keep trying everything everywhere.
+    @staticmethod
+    def failed_pairs(history):
+        out = set()
+        for res in (history or {}).values():
+            for pair, val in (res or {}).items():
+                if val is None:
+                    out.add(pair)
+        return out
+
     # -- helpers -----------------------------------------------------------
 
     # Reject excitation with a Z component unless explicitly allowed, so the
