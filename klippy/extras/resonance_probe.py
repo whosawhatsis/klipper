@@ -544,6 +544,22 @@ class ResonanceProbe:
         #
         # Healthy points that same run held >=0.85 of the session median and the
         # bad one sat at 0.60, so the default splits them.  0 disables.
+        # Below this fraction of the SAME descent's air level, verify's "air"
+        # plateau was not in air and the candidate is under the surface.  0.5 is
+        # deliberately loose: a real overshoot damps hard (the confirmed
+        # over-presses on 2026-08-08 sat at 23-36% drops), while air varies by
+        # far less than 2x between the descent and the ramp seconds later.
+        self.verify_submerged_frac = config.getfloat('verify_submerged_frac',
+                                                     0.5, minval=0.,
+                                                     maxval=1.)
+        # How far ABOVE a rejected halt the next descent restarts.  Positive by
+        # construction: re-arming below a rejection skips the region it was
+        # rejected in, so a false REJECTION (as opposed to a false halt) makes
+        # every later descent start under the surface, where everything reads as
+        # contact.  That is how a probe reached -0.317 on 2026-08-08.  Restarting
+        # above costs repeated false halts; restarting below costs a gouge, and
+        # repeated false halts are the cheaper failure.
+        self.rearm_margin = config.getfloat('rearm_margin', 0.05, minval=0.)
         self.min_air_fraction = config.getfloat('min_air_fraction', 0.7,
                                                 minval=0., below=1.)
         # Air baselines of contacts accepted this session, for that comparison,
@@ -1723,6 +1739,11 @@ class HaltingContactProbe:
         self._verify_step_snr = getattr(rp, 'verify_step_snr', 0.)
         self._verify_rise_abort = getattr(rp, 'verify_rise_abort', 0.10)
         self._verify_contact_dwell = getattr(rp, 'verify_contact_dwell', 0.)
+        # Overshoot detection and re-arm direction.  Defaults match the config
+        # ones so the calibration commands, which build this helper directly
+        # with no [resonance_probe] section, get the same protection.
+        self.verify_submerged_frac = getattr(rp, 'verify_submerged_frac', 0.5)
+        self.rearm_margin = getattr(rp, 'rearm_margin', 0.05)
         # Per-direction detail from the last verify, for reporting.
         self._verify_detail = {}
         self._descend_speed = 1.
@@ -1931,8 +1952,12 @@ class HaltingContactProbe:
     # to where the down-ramp amplitude crosses the air/contact midpoint (a
     # sharper datum than the live halt, which anchors a little high).  Returns
     # (air_amp, contact_amp, refined_z_or_None) on the driven axis.
+    # Returns (air_amp, contact_amp, refined_z, step_snr, submerged).  The
+    # trailing 'submerged' says the ramp never reached air, i.e. the candidate
+    # is BELOW the surface - the caller must lift, never re-arm downward.
     def _verify_contact_moving(self, gcmd, x0, y0, z_cand, lift_speed,
-                               z_limit=None, up_override=None):
+                               z_limit=None, up_override=None,
+                               trigger_axis=None):
         import numpy as np
         toolhead = self.printer.lookup_object('toolhead')
         up = gcmd.get_float("VERIFY_UP", 0.15, above=0.)
@@ -2032,25 +2057,80 @@ class HaltingContactProbe:
         toolhead.wait_moves()
         data = np.asarray(samples, dtype=np.float64)
         if len(data) < 8 or not seg_times:
-            return 0., 0., None
+            return 0., 0., None, 0., False
         times = data[:, 0]
         sps = (len(times) - 1) / max(times[-1] - times[0], 1e-9)
         win_n = max(8, int(self.detect_cycles / f * sps))
         seg_end = np.asarray(seg_times, dtype=np.float64)
         tag_arr = np.asarray(tags)
         zc = np.asarray([s[0][2] for s in segs], dtype=np.float64)
-        col = data[:, 1 + self.output_index]
-        (wamp,), wk = _window_amps_tagged(times, [col], f, win_n,
-                                          max(1, win_n // 2), seg_end)
+        # EVERY channel, not just the configured output axis.  The descent
+        # halts on whichever of the three fires and its refinement follows that
+        # channel (see _analyze_drip); verify used to judge the result on
+        # output_index regardless, so a contact that was loud on y and silent on
+        # z was assessed on z.  Measured on 2026-08-08: a descent with per-axis
+        # drops of x=16% y=51% z=7% was judged on z, at a 15% threshold - a real
+        # contact rejected on the one channel that could not see it.  That false
+        # REJECTION is what feeds the re-arm walk-down below, so this is the
+        # upstream half of that bug.
+        cols = [data[:, 1 + a] for a in range(self.AXIS_COUNT)]
+        wamps, wk = _window_amps_tagged(times, cols, f, win_n,
+                                        max(1, win_n // 2), seg_end)
         wtag = tag_arr[wk]
         wz = zc[wk]
         wrep = np.asarray(rep_ids)[wk]
-        air = wamp[wtag == 'air']
-        contact = wamp[wtag == 'contact']
-        if len(air) < 2 or len(contact) < 1:
-            return 0., 0., None
-        air_amp = float(np.median(air))
-        contact_amp = float(np.median(contact))
+        air_mask = wtag == 'air'
+        contact_mask = wtag == 'contact'
+        if int(air_mask.sum()) < 2 or int(contact_mask.sum()) < 1:
+            return 0., 0., None, 0., False
+        air_axes = [float(np.median(w[air_mask])) for w in wamps]
+        contact_axes = [float(np.median(w[contact_mask])) for w in wamps]
+        # Fractional STEP per axis, signed: positive = damped by contact (the
+        # normal case), negative = amplitude ROSE (inverted coupling, which this
+        # machine shows at some locations).  Magnitude is what carries evidence;
+        # the sign is kept so _is_inverted_rise can still refuse to re-arm.
+        drops = [((a - c) / a if a > 1e-9 else 0.)
+                 for a, c in zip(air_axes, contact_axes)]
+
+        # OVERSHOOT TEST.  Verify cannot see an over-press by asking "is it
+        # damped here" - below the surface the answer is yes at every depth, so
+        # an overshot candidate looks identical to a good one in the ramp shape
+        # alone.  What DOES distinguish it: if the ramp started below the
+        # surface then its 'air' plateau at z_hi was never in air, so it sits
+        # far under the air level this same descent measured moments earlier at
+        # the same point.  A weak-excitation location reads low too, but the
+        # response there is the same - do not re-arm downward - so the two need
+        # not be told apart to act safely.
+        best_frac = self._submerged_fraction(air_axes,
+                                             getattr(self, '_last_descent_air',
+                                                     None))
+        submerged = (best_frac is not None
+                     and best_frac[0] < self.verify_submerged_frac)
+        if submerged:
+            gcmd.respond_info(
+                "verify: OVERSHOT - the 'air' end of the ramp at z=%.4f is"
+                " only %.0f%% of this descent's own air level on its strongest"
+                " channel (%s), so the ramp never left contact.  The candidate"
+                " is BELOW the surface, not above it; lifting rather than"
+                " re-arming downward."
+                % (z_hi, best_frac[0] * 100., 'xyz'[best_frac[1]]))
+
+        # Judge on the channel that actually saw the contact: the trigger axis
+        # when the caller knows it, else the strongest responder.  Falling back
+        # to the STRONGEST rather than to output_index matters for the salvage
+        # path, which has no trigger axis precisely because the halt was missed.
+        judge = self._pick_verify_axis(drops, trigger_axis)
+        self.last_verify_axes = list(zip(air_axes, contact_axes, drops))
+        self.last_verify_axis = judge
+        _dbg(gcmd,
+             "verify: per-axis step x=%+.0f%% y=%+.0f%% z=%+.0f%%"
+             " (air x=%.0f y=%.0f z=%.0f) - judging on %s%s"
+             % (drops[0] * 100., drops[1] * 100., drops[2] * 100.,
+                air_axes[0], air_axes[1], air_axes[2], 'xyz'[judge],
+                " (trigger axis)" if trigger_axis == judge else ""))
+        wamp = wamps[judge]
+        air_amp = air_axes[judge]
+        contact_amp = contact_axes[judge]
         # Refine.  Every ramp is estimated separately - each rep gives one DOWN
         # and one UP datapoint - so more reps mean more independent estimates
         # instead of a longer pooled list, and so any systematic difference
@@ -2112,7 +2192,7 @@ class HaltingContactProbe:
         # path: it saves the drip descent, which ends at the halt.
         self._autosave_verify(wz, wamp, wtag, wrep, air_amp, contact_amp,
                               z_cand, reps, ramp_speed)
-        return air_amp, contact_amp, refined, step_snr
+        return air_amp, contact_amp, refined, step_snr, submerged
 
     def _autosave_verify(self, wz, wamp, wtag, wrep, air_amp, contact_amp,
                          z_cand, reps, ramp_speed):
@@ -2271,7 +2351,7 @@ class HaltingContactProbe:
         # salvage at floor -0.53 reported -22% while the true surface was at
         # ~-0.05, i.e. every sample was pressed.
         up = gcmd.get_float("SALVAGE_UP", 0.8, above=0.2)
-        air_a, touch_a, refined, step_snr = self._verify_contact_moving(
+        air_a, touch_a, refined, step_snr, _sub = self._verify_contact_moving(
             gcmd, x0, y0, z_floor, lift_speed, z_limit=z_floor,
             up_override=up)
         drop = (air_a - touch_a) / air_a if air_a > 1e-9 else 0.
@@ -2354,7 +2434,7 @@ class HaltingContactProbe:
                 # descent over-pressed 0.282mm, salvage recovered a height from
                 # the release ramp, and nothing ever checked it.
                 if verify_salvage:
-                    air_a, touch_a, refined, step_snr = \
+                    air_a, touch_a, refined, step_snr, _sub = \
                         self._verify_contact_moving(gcmd, x0, y0, z_sal,
                                                     lift_speed)
                     okv, drop, how = self._verify_verdict(
@@ -2379,10 +2459,12 @@ class HaltingContactProbe:
                 # _descend_once leaves the nozzle AT contact_z, so this is a
                 # press-and-hold on the platform.  See verify_contact_dwell.
                 toolhead.dwell(contact_dwell)
+            submerged = False
             if gcmd.get_int("VERIFY_MOVING", 1):
-                air_a, touch_a, refined, step_snr = \
-                    self._verify_contact_moving(gcmd, x0, y0, contact_z,
-                                                lift_speed)
+                air_a, touch_a, refined, step_snr, submerged = \
+                    self._verify_contact_moving(
+                        gcmd, x0, y0, contact_z, lift_speed,
+                        trigger_axis=getattr(self, '_last_trigger_axis', None))
             else:
                 air_a, touch_a, refined = self._verify_contact(
                     gcmd, x0, y0, contact_z, lift_speed, gap, engage)
@@ -2419,6 +2501,15 @@ class HaltingContactProbe:
                 toolhead.wait_moves()
                 return final_z, True
             self._tag_verify_outcome('rejected', drop, thresh, step_snr)
+            if submerged:
+                # The ramp never reached air, so this candidate is UNDER the
+                # surface.  There is nothing to find below it and descending
+                # again would press deeper, so fail the point: a mesh nudges off
+                # it, RANK_FREQ retries, and the plate is not gouged.  The
+                # message already went out from _verify_contact_moving.
+                toolhead.manual_move([x0, y0, ceiling], lift_speed)
+                toolhead.wait_moves()
+                return None, False
             if self._is_inverted_rise(drop, rise_abort):
                 # Touching ADDED signal here.  That says the coupling at this
                 # location is inverted, not that contact lies further down, so
@@ -2465,7 +2556,26 @@ class HaltingContactProbe:
                 # Corroboration exists but this halt is above it: re-arming is
                 # still allowed, yet it must not walk PAST the known contact.
                 z_floor = max(z_floor, prior_z - rp.verify_corroborate_tol)
-            cur_ceiling = contact_z - gap
+            # Restart ABOVE the rejection, not below it.
+            #
+            # The old "cur_ceiling = contact_z - gap" began the next descent
+            # UNDER the halt it had just rejected, so the rejected region was
+            # never re-examined.  That is safe only if rejections are always
+            # right.  They are not - verify judged on a single fixed axis until
+            # today, and a contact loud on y and silent on z was rejected on z -
+            # and a false REJECTION under that rule is unrecoverable: every
+            # later descent starts below the surface, where every reading is
+            # contact, so the probe confirms something deep.  Observed
+            # 2026-08-08: -0.2665, -0.3170, -0.3046 at a point whose surface is
+            # near +0.03.
+            #
+            # Restarting above re-traverses the rejected band.  If the halt was
+            # genuinely false the detector re-derives its air baseline and can
+            # pass through; if it was real we get another chance to confirm it
+            # instead of plowing past.  The cost is repeated false halts and a
+            # point that eventually fails - which is the cheaper failure, and
+            # the same trade already made for the corroborated case above.
+            cur_ceiling = min(ceiling, contact_z + self.rearm_margin)
             # That clamp can leave less travel than a descent needs to measure
             # anything.  Measured 2026-08-07: a rejection at z=0.1183 put the
             # ceiling at -0.0317 and the clamped floor at -0.1291 - 0.097mm of
@@ -2636,6 +2746,41 @@ class HaltingContactProbe:
     # which let a halt 65um BELOW a confirmed contact fall through to the re-arm
     # path, where the clamped floor then sat above the ceiling and produced a
     # NEGATIVE travel span (observed 2026-08-07: "only -0.165mm of travel left").
+    @staticmethod
+    def _submerged_fraction(air_axes, ref_air):
+        # Verify's 'air' plateau against the air level the SAME descent measured
+        # at this point seconds earlier, on the strongest channel.  One healthy
+        # channel is enough to prove the top of the ramp really was in air, so
+        # the max is the right statistic, not the mean.  Returns (frac, axis),
+        # or None when there is no usable reference.
+        #
+        # Pairs, not two parallel lists: filtering zero references out of a bare
+        # list of fractions silently renumbers the axes, and the message would
+        # then name the wrong one.
+        if not ref_air or len(ref_air) != len(air_axes):
+            return None
+        pairs = [(air_axes[a] / ref_air[a], a)
+                 for a in range(len(air_axes)) if ref_air[a] > 1e-9]
+        if not pairs:
+            return None
+        return max(pairs)
+
+    @staticmethod
+    def _pick_verify_axis(drops, trigger_axis):
+        # Which channel to judge the contact step on.  The trigger axis is where
+        # the halt FIRED, which is not always where the step is best MEASURED,
+        # so a clearly stronger genuine drop wins.  An inverted-rise channel
+        # (negative drop) may never take over: its step is real but its sign is
+        # backwards, and _is_inverted_rise upstream needs to see it as a rise.
+        # With no trigger axis - the salvage path, where the halt was missed -
+        # fall back to the strongest responder rather than to output_index,
+        # which is the fixed-axis mistake this whole change is undoing.
+        best = max(range(len(drops)), key=lambda a: abs(drops[a]))
+        judge = best if trigger_axis is None else trigger_axis
+        if abs(drops[best]) > abs(drops[judge]) and drops[best] > 0.:
+            judge = best
+        return judge
+
     @staticmethod
     def _corroborated(z, prior_z, tol):
         return bool(prior_z is not None and tol > 0. and z <= prior_z + tol)
@@ -3053,6 +3198,12 @@ class HaltingContactProbe:
             " (self-derived from this descent's air noise)"
             % (ddt[0], ddt[1], ddt[2]))
         a0 = [(sum(v) / len(v)) if v else 0. for v in endstop._dbg_amp0]
+        # Publish it for verify's overshoot test.  This is the best air
+        # reference that exists for the check: SAME point, SAME excitation,
+        # seconds earlier - so unlike the cross-session _air_history it cannot
+        # be confounded by location or drive level.  If verify's "air" plateau
+        # comes back far below this, the top of its ramp was not in air.
+        self._last_descent_air = list(a0)
         _dbg(gcmd,
             "live-halt diag: start-of-descent air amplitude x=%.0f y=%.0f z=%.0f"
             " (win=%s samp/%.3fmm step=%.3fmm)"
@@ -3084,6 +3235,10 @@ class HaltingContactProbe:
         # SAME channel that produced the halt, not blindly on output_index,
         # or the refinement can find nothing on an axis that never dropped.
         trig_axis = endstop.get_trigger_axis() if halted else None
+        # Verify must judge on the channel that SAW the contact, for the same
+        # reason the refinement below does.  Published rather than returned so
+        # the several verify call sites do not all have to thread it.
+        self._last_trigger_axis = trig_axis
         if halted:
             _dbg(gcmd,"Resonance probe: live halt triggered on axis=%s"
                               % 'xyz'[trig_axis])

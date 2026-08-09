@@ -2444,6 +2444,24 @@ excitation_frequency:
 #   stays silent until three contacts have been accepted (it has no reference
 #   before that), so a session starting on a weak spot cannot be caught. Set to
 #   0 to disable.
+#rearm_margin: 0.05
+#   Where the next descent restarts after a halt is REJECTED, as a distance
+#   (mm) ABOVE the rejected halt. It used to restart below, which skipped the
+#   rejected region entirely - safe only if rejections are never wrong. A false
+#   rejection under that rule was unrecoverable: every later descent began under
+#   the surface, where every reading is contact, so the probe confirmed
+#   something deep. Restarting above re-traverses the band, so a genuinely false
+#   halt can be passed on a second look while a real contact gets another chance
+#   to be confirmed. The cost is repeated false halts and, eventually, a failed
+#   point - which is cheaper than pressing into the plate.
+#verify_submerged_frac: 0.5
+#   Overshoot guard. Verify cannot detect an over-press by asking whether the
+#   resonance is damped, because below the surface it is damped at every depth.
+#   Instead the 'air' end of its ramp is compared against the air level the same
+#   descent measured at the same point moments earlier; below this fraction on
+#   every channel, the ramp never left contact and the candidate is BELOW the
+#   surface. The probe then lifts and fails the point rather than re-arming
+#   downward. Set to 0 to disable.
 #verify_corroborate_tol: 0.05
 #   A rejected halt normally re-arms below itself, on the assumption that the
 #   halt was above true contact. That assumption is wrong when a contact has
