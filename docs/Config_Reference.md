@@ -2454,7 +2454,7 @@ excitation_frequency:
 #   halt can be passed on a second look while a real contact gets another chance
 #   to be confirmed. The cost is repeated false halts and, eventually, a failed
 #   point - which is cheaper than pressing into the plate.
-#verify_submerged_frac: 0.5
+#verify_submerged_frac: 0.75
 #   Overshoot guard. Verify cannot detect an over-press by asking whether the
 #   resonance is damped, because below the surface it is damped at every depth.
 #   Instead the 'air' end of its ramp is compared against the air level the same
@@ -2462,6 +2462,14 @@ excitation_frequency:
 #   every channel, the ramp never left contact and the candidate is BELOW the
 #   surface. The probe then lifts and fails the point rather than re-arming
 #   downward. Set to 0 to disable.
+#   The default is measured, not chosen: replayed against 12 labelled overshoot
+#   traces, the fraction never exceeds 0.68 with the ramp top 0.15mm or more
+#   below contact, while the shallowest legitimate reading is 0.82.
+#   BLIND SPOT: the contact signal is flat then cliffs, so between 0.05mm above
+#   contact and 0.10mm below it the amplitude does not change at all. Overshoots
+#   shallower than ~0.15mm are therefore invisible to this test and to any other
+#   amplitude test. 'rearm_margin' is what prevents those, by keeping a descent
+#   from starting below the surface in the first place.
 #verify_corroborate_tol: 0.05
 #   A rejected halt normally re-arms below itself, on the assumption that the
 #   halt was above true contact. That assumption is wrong when a contact has

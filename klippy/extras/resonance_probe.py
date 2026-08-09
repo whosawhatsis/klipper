@@ -545,12 +545,24 @@ class ResonanceProbe:
         # Healthy points that same run held >=0.85 of the session median and the
         # bad one sat at 0.60, so the default splits them.  0 disables.
         # Below this fraction of the SAME descent's air level, verify's "air"
-        # plateau was not in air and the candidate is under the surface.  0.5 is
-        # deliberately loose: a real overshoot damps hard (the confirmed
-        # over-presses on 2026-08-08 sat at 23-36% drops), while air varies by
-        # far less than 2x between the descent and the ramp seconds later.
+        # plateau was not in air and the candidate is under the surface.
+        #
+        # 0.75 is MEASURED, not guessed - local/replay_submerged.py against the
+        # 12 labelled overshoot descents.  With the ramp top 0.15mm or more
+        # below contact the fraction never exceeds 0.68, while the shallowest
+        # legitimate reading is 0.82; 0.75 sits between them.  The 0.5 first
+        # written here would have caught 4 of those 12.
+        #
+        # KNOWN BLIND SPOT, and it is physics rather than tuning: the contact
+        # signal is FLAT-then-CLIFF (see klipper-nozzle-sensing).  From 0.05mm
+        # above contact to 0.10mm below it the amplitude is unchanged - every
+        # one of the 12 traces reads 0.82-1.04 there - so an overshoot shallower
+        # than ~0.15mm is invisible to ANY amplitude test, this one included.
+        # The real protection against moderate over-press is rearm_margin
+        # keeping the descent from starting under the surface at all; this guard
+        # only catches the deep case that survives that.
         self.verify_submerged_frac = config.getfloat('verify_submerged_frac',
-                                                     0.5, minval=0.,
+                                                     0.75, minval=0.,
                                                      maxval=1.)
         # How far ABOVE a rejected halt the next descent restarts.  Positive by
         # construction: re-arming below a rejection skips the region it was
@@ -1742,7 +1754,7 @@ class HaltingContactProbe:
         # Overshoot detection and re-arm direction.  Defaults match the config
         # ones so the calibration commands, which build this helper directly
         # with no [resonance_probe] section, get the same protection.
-        self.verify_submerged_frac = getattr(rp, 'verify_submerged_frac', 0.5)
+        self.verify_submerged_frac = getattr(rp, 'verify_submerged_frac', 0.75)
         self.rearm_margin = getattr(rp, 'rearm_margin', 0.05)
         # Per-direction detail from the last verify, for reporting.
         self._verify_detail = {}
