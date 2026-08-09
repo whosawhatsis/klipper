@@ -478,30 +478,12 @@ class ResonanceProbe:
         # up-vs-down bias) rather than a longer pooled sample.  Costs time:
         # roughly one ramp pair per rep at VERIFY_RAMP_SPEED.
         self.verify_reps = config.getint('verify_reps', 1, minval=1, maxval=10)
-        # 2 = UP ramp only (default), 1 = mean of down and up, 0 = down only.
-        #
-        # The up ramp is MUCH more consistent, and it is a property of the
-        # signal rather than of the estimator.  Per-rep edges from six verify
-        # captures on 2026-08-09: the down ramp's contact edge is a 3-7% step,
-        # barely above noise, so the steepest-step search lands on a different
-        # window each rep and the estimate scatters by hundreds of um.  The up
-        # ramp's edge is an 11-19% step and repeats to within a few um - in one
-        # capture all three reps agreed exactly.
-        #
-        # That asymmetry is the flat-then-cliff signal seen from both sides.
-        # Descending, damping comes on gradually over ~120um and there is no
-        # sharp step to find; ascending, the nozzle separates and the resonance
-        # snaps back at a well-defined height.  So averaging the two dilutes a
-        # good estimator with a bad one.
-        #
-        # What this GIVES UP: the mean cancelled the positional up/down bias by
-        # construction (+1..+2um at one point, +15..+20um at another, sometimes
-        # negative), and up-only inherits that bias.  Traded knowingly - the
-        # down ramp's scatter is the larger error - but REVISIT after the print
-        # test, which is the first measurement that can say whether the residual
-        # bias matters in the only units that count.
-        self.verify_combine = config.getint('verify_combine', 2, minval=0,
-                                            maxval=2)
+        # 1 = report the mean of the down and up estimates (default), 0 = down
+        # ramp only, kept for A/B.  Averaging cancels the up/down bias, which is
+        # POSITIONAL rather than a machine constant: +1..+2um at one point,
+        # +15..+20um at another, and it has been seen negative.
+        self.verify_combine = config.getint('verify_combine', 1, minval=0,
+                                            maxval=1)
         # Second confirm criterion, OR'd with the ratio test, so it can only ADD
         # confirmations - never remove one.  DEFAULT OFF, because the only thing
         # it was ever measured to contribute was a false one: on 2026-08-06 it
@@ -2260,21 +2242,12 @@ class HaltingContactProbe:
         r_down, r_up = _agg(down_edges), _agg(up_edges)
         bias = (r_up - r_down) if (r_down is not None
                                    and r_up is not None) else None
-        # UP RAMP ONLY by default - see verify_combine.  The up edge is an
-        # 11-19% step that repeats to a few um; the down edge is a 3-7% step
-        # that scatters by hundreds.  Averaging them dilutes the good estimate.
-        #
-        # The earlier measurement behind the mean (2.34um vs 2.92um pooled over
-        # 26 probes) is NOT contradicted: it compared mean-of-both against
-        # DOWN-only, so up-only was never in that comparison.
-        #
-        # VERIFY_COMBINE=1 restores the mean and =0 the down-only answer, both
-        # for A/B against a print test.
+        # Mean of both directions.  Measured 2.34um vs 2.92um for down-only,
+        # pooled within-point over 26 probes, and it cancels the positional
+        # up/down bias by construction.
         combine = gcmd.get_int("VERIFY_COMBINE", self._verify_combine,
-                               minval=0, maxval=2)
-        if combine == 2:
-            refined = r_up if r_up is not None else r_down
-        elif combine and bias is not None:
+                               minval=0, maxval=1)
+        if combine and bias is not None:
             refined = 0.5 * (r_down + r_up)
         else:
             refined = r_down if r_down is not None else r_up
