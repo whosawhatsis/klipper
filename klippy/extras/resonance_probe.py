@@ -2285,11 +2285,11 @@ class HaltingContactProbe:
         # per-ramp windows are kept.  The descent autosave does not cover this
         # path: it saves the drip descent, which ends at the halt.
         self._autosave_verify(wz, wamp, wtag, wrep, air_amp, contact_amp,
-                              z_cand, reps, ramp_speed)
+                              z_cand, reps, ramp_speed, x0, y0)
         return air_amp, contact_amp, refined, step_snr, submerged
 
     def _autosave_verify(self, wz, wamp, wtag, wrep, air_amp, contact_amp,
-                         z_cand, reps, ramp_speed):
+                         z_cand, reps, ramp_speed, x0=None, y0=None):
         rp = self.printer.lookup_object('resonance_probe', None)
         tdir = getattr(rp, 'trace_dir', None)
         if not tdir or not len(wz):
@@ -2306,6 +2306,13 @@ class HaltingContactProbe:
                          % (self.excitation_freq, self.accel_per_hz,
                             ramp_speed))
                 fh.write("# z_cand=%.5f reps=%d\n" % (z_cand, reps))
+                # XY, so a capture can be tied to a bed LOCATION offline.
+                # Without it the only way to know where a capture came from is
+                # to count positions in a log sequence that also contains
+                # rejections - which is how the position-dependence of the
+                # re-excitation artifact ended up un-analysable.
+                if x0 is not None and y0 is not None:
+                    fh.write("# x=%.3f y=%.3f\n" % (x0, y0))
                 fh.write("# air_amp=%.3f contact_amp=%.3f\n"
                          % (air_amp, contact_amp))
                 note = getattr(rp, 'trace_note', None)
