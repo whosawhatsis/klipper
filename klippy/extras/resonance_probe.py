@@ -572,6 +572,15 @@ class ResonanceProbe:
         # above costs repeated false halts; restarting below costs a gouge, and
         # repeated false halts are the cheaper failure.
         self.rearm_margin = config.getfloat('rearm_margin', 0.05, minval=0.)
+        # Edge-offset overshoot test.  OFF by default (0): the SLOPE needs no
+        # calibration but the BASELINE does, and a wrong baseline rejects good
+        # contacts.  Run probes with VERBOSE=1, read the reported "edge sits
+        # X below the halt" from contacts you trust, and set this to their
+        # median.  It is per-mode and per-surface, not a machine constant.
+        self.verify_overshoot_baseline = config.getfloat(
+            'verify_overshoot_baseline', 0., minval=0.)
+        self.verify_overshoot_tol = config.getfloat(
+            'verify_overshoot_tol', 0.05, minval=0.)
         self.min_air_fraction = config.getfloat('min_air_fraction', 0.7,
                                                 minval=0., below=1.)
         # Air baselines of contacts accepted this session, for that comparison,
@@ -1756,6 +1765,9 @@ class HaltingContactProbe:
         # with no [resonance_probe] section, get the same protection.
         self.verify_submerged_frac = getattr(rp, 'verify_submerged_frac', 0.75)
         self.rearm_margin = getattr(rp, 'rearm_margin', 0.05)
+        self.verify_overshoot_baseline = getattr(
+            rp, 'verify_overshoot_baseline', 0.)
+        self.verify_overshoot_tol = getattr(rp, 'verify_overshoot_tol', 0.05)
         # Per-direction detail from the last verify, for reporting.
         self._verify_detail = {}
         self._descend_speed = 1.
@@ -1972,7 +1984,14 @@ class HaltingContactProbe:
                                trigger_axis=None):
         import numpy as np
         toolhead = self.printer.lookup_object('toolhead')
-        up = gcmd.get_float("VERIFY_UP", 0.15, above=0.)
+        # 0.35, not the 0.15 this shipped with.  The ramp can only measure an
+        # overshoot while the contact cliff stays inside it, and the cliff sits
+        # ~0.11mm BELOW true contact on this machine (flat-then-cliff).  With
+        # up=0.15 the edge-offset test saturates at ~0.26mm of overshoot and the
+        # air plateau at the top is often still under the surface, which is what
+        # made the plateau test blind below 0.15mm.  Widening the top of the
+        # ramp fixes both, and costs one extra ramp-length of time per rep.
+        up = gcmd.get_float("VERIFY_UP", 0.35, above=0.)
         if up_override is not None:
             up = up_override
         down = gcmd.get_float("VERIFY_DOWN", 0.25, above=0.)
@@ -2169,6 +2188,23 @@ class HaltingContactProbe:
         # the average of the middle two, so it throws away half the samples; the
         # sqrt(n) gain from averaging them all is worth more than the outlier
         # costs.  A median would only win if the outliers were rarer or bigger.
+        # EDGE-OFFSET OVERSHOOT TEST.  Independent of the plateau test above and
+        # sensitive exactly where that one is blind.  If the candidate sits d
+        # below the true surface, the cliff sits d higher RELATIVE to it, so
+        # (z_cand - edge) rises one-for-one with d.  Replayed over the 12
+        # labelled overshoot descents (local/replay_edge_offset.py) the rise is
+        # +0.050/+0.100/+0.150/+0.200/+0.250 for d=0.05..0.25, with all 12
+        # traces inside ~0.02mm at every depth.
+        #
+        # The SLOPE is 1.0 and needs no calibration; the BASELINE does.  At a
+        # correct candidate the offset is not zero - the edge sits ~0.113mm
+        # below contact in that replay, which is the flat-then-cliff lag.  That
+        # constant is a property of the mode and the surface (see
+        # klipper-nozzle-sensing: press depth is a MODE property), it was
+        # measured at descent speed rather than ramp speed, and the machine's
+        # own logs show a different value - so it is NOT hardcoded here.  The
+        # test stays off until verify_overshoot_baseline is set from hardware,
+        # and reports the number needed to set it.
         def _agg(vals):
             return float(sum(vals) / len(vals)) if vals else None
         def _spread(vals):
@@ -2191,11 +2227,33 @@ class HaltingContactProbe:
             refined = 0.5 * (r_down + r_up)
         else:
             refined = r_down if r_down is not None else r_up
+        # How far the edge sits below the candidate.  Positive = the edge is
+        # BELOW the halt, which is the normal flat-then-cliff lag; the value
+        # DROPS by 1mm for every 1mm of overshoot, so a shortfall against the
+        # baseline is the overshoot.
+        edge_lag = (z_cand - refined) if refined is not None else None
+        base = self.verify_overshoot_baseline
+        overshoot = ((base - edge_lag)
+                     if (base and edge_lag is not None) else None)
+        if edge_lag is not None:
+            _dbg(gcmd,
+                 "verify: edge sits %.4fmm below the halt%s"
+                 % (edge_lag,
+                    ("" if not base else
+                     " (baseline %.4f -> overshoot %+.4f)" % (base, overshoot))))
+        if overshoot is not None and overshoot > self.verify_overshoot_tol:
+            submerged = True
+            gcmd.respond_info(
+                "verify: OVERSHOT by ~%.3fmm - the contact edge is only %.4fmm"
+                " below the halt where a good contact at this mode gives %.4fmm."
+                " The halt was already past the surface; lifting rather than"
+                " re-arming downward." % (overshoot, edge_lag, base))
         self._verify_detail = {
             'down': r_down, 'up': r_up, 'bias': bias, 'reps': reps,
             'down_n': len(down_edges), 'up_n': len(up_edges),
             'down_spread': _spread(down_edges), 'up_spread': _spread(up_edges),
             'combined': bool(combine and bias is not None),
+            'edge_lag': edge_lag, 'overshoot': overshoot,
         }
         # Save the ramp windows.  Which estimator to report (down / up / their
         # mean) is an open question, and it is decidable OFFLINE from one set of

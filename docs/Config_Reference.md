@@ -2455,6 +2455,25 @@ excitation_frequency:
 #   to be confirmed. The cost is repeated false halts and, eventually, a failed
 #   point - which is cheaper than pressing into the plate.
 #verify_submerged_frac: 0.75
+#verify_overshoot_baseline: 0.0
+#   Second, independent overshoot test, sensitive exactly where
+#   'verify_submerged_frac' is blind. The contact edge normally sits a fixed
+#   distance BELOW the halt (the flat-then-cliff lag). If the halt was already
+#   past the surface by d, the edge sits d closer to it, so the shortfall
+#   against this baseline IS the overshoot. Replayed over 12 labelled overshoot
+#   traces the relationship is one-for-one (+0.050mm of offset per +0.050mm of
+#   overshoot) with all traces inside ~0.02mm, usable from ~0.02mm of overshoot
+#   up to where the cliff leaves the top of the ramp (~0.26mm at VERIFY_UP 0.15,
+#   further as VERIFY_UP grows).
+#   0 disables it, which is the default: the SLOPE needs no calibration but the
+#   BASELINE does, and a wrong one rejects good contacts. To set it, probe with
+#   VERBOSE=1, read "verify: edge sits X below the halt" from contacts you
+#   trust, and use their median. It is a property of the mode and the surface,
+#   not a machine constant.
+#verify_overshoot_tol: 0.05
+#   How far past 'verify_overshoot_baseline' (mm) before a halt is called an
+#   overshoot. Wants to sit above the trace-to-trace spread of the baseline
+#   (~0.02mm in the replay) and below the smallest overshoot worth catching.
 #   Overshoot guard. Verify cannot detect an over-press by asking whether the
 #   resonance is damped, because below the surface it is damped at every depth.
 #   Instead the 'air' end of its ramp is compared against the air level the same
