@@ -596,6 +596,13 @@ class ResonanceProbe:
         # above costs repeated false halts; restarting below costs a gouge, and
         # repeated false halts are the cheaper failure.
         self.rearm_margin = config.getfloat('rearm_margin', 0.05, minval=0.)
+        # 1 = judge contact on the ramp's damping MINIMUM (default), 0 = on the
+        # dwell at the bottom of the ramp, which is what this did before and is
+        # kept for A/B.  See _ramp_min_amp for why the dwell reads high.
+        self.verify_contact_stat = config.getint('verify_contact_stat', 1,
+                                                 minval=0, maxval=1)
+        self.verify_min_windows = config.getint('verify_min_windows', 5,
+                                                minval=1, maxval=51)
         # Edge-offset overshoot test.  OFF by default (0): the SLOPE needs no
         # calibration but the BASELINE does, and a wrong baseline rejects good
         # contacts.  Run probes with VERBOSE=1, read the reported "edge sits
@@ -1789,6 +1796,8 @@ class HaltingContactProbe:
         # with no [resonance_probe] section, get the same protection.
         self.verify_submerged_frac = getattr(rp, 'verify_submerged_frac', 0.75)
         self.rearm_margin = getattr(rp, 'rearm_margin', 0.05)
+        self.verify_contact_stat = getattr(rp, 'verify_contact_stat', 1)
+        self.verify_min_windows = getattr(rp, 'verify_min_windows', 5)
         self.verify_overshoot_baseline = getattr(
             rp, 'verify_overshoot_baseline', 0.)
         self.verify_overshoot_tol = getattr(rp, 'verify_overshoot_tol', 0.05)
@@ -2139,7 +2148,17 @@ class HaltingContactProbe:
         if int(air_mask.sum()) < 2 or int(contact_mask.sum()) < 1:
             return 0., 0., None, 0., False
         air_axes = [float(np.median(w[air_mask])) for w in wamps]
-        contact_axes = [float(np.median(w[contact_mask])) for w in wamps]
+        dwell_axes = [float(np.median(w[contact_mask])) for w in wamps]
+        # Read the contact level from the deepest damping the ramp reached, not
+        # from the dwell at the bottom of it - see _ramp_min_amp.
+        ramp_mask = (wtag == 'down') | (wtag == 'contact') | (wtag == 'up')
+        contact_axes = []
+        for a, w in enumerate(wamps):
+            rmin = (self._ramp_min_amp(wz[ramp_mask], w[ramp_mask],
+                                       self.verify_min_windows)
+                    if int(ramp_mask.sum()) else None)
+            contact_axes.append(rmin if (self.verify_contact_stat and
+                                         rmin is not None) else dwell_axes[a])
         # Fractional STEP per axis, signed: positive = damped by contact (the
         # normal case), negative = amplitude ROSE (inverted coupling, which this
         # machine shows at some locations).  Magnitude is what carries evidence;
@@ -2177,6 +2196,11 @@ class HaltingContactProbe:
         judge = self._pick_verify_axis(drops, trigger_axis)
         self.last_verify_axes = list(zip(air_axes, contact_axes, drops))
         self.last_verify_axis = judge
+        _dbg(gcmd,
+             "verify: ramp-min vs dwell x=%.0f/%.0f y=%.0f/%.0f z=%.0f/%.0f"
+             " (dwell past the damping minimum reads HIGH)"
+             % (contact_axes[0], dwell_axes[0], contact_axes[1], dwell_axes[1],
+                contact_axes[2], dwell_axes[2]))
         _dbg(gcmd,
              "verify: per-axis step x=%+.0f%% y=%+.0f%% z=%+.0f%%"
              " (air x=%.0f y=%.0f z=%.0f) - judging on %s%s"
@@ -2497,7 +2521,22 @@ class HaltingContactProbe:
         attempts = gcmd.get_int("VERIFY_ATTEMPTS", 6, minval=1, maxval=12)
         gap = gcmd.get_float("VERIFY_GAP", 0.15, above=0.)
         engage = gcmd.get_float("VERIFY_ENGAGE", 0.10, minval=0.)
-        thresh = gcmd.get_float("VERIFY_DROP", 0.15, above=0., below=1.)
+        # 0.20 with the ramp-minimum statistic, 0.15 with the dwell.  The
+        # threshold has to move because the STATISTIC moved: a moving-median
+        # minimum over the ramp sits lower than a median of the dwell, so a bar
+        # calibrated for the dwell is too loose for it.
+        #
+        # Both numbers are measured, not chosen - replayed over all 649 saved
+        # verify captures (local/replay_rampmin.py).  Against the shipped
+        # dwell-at-0.15 behaviour, ramp-min at 0.20 rescues 101 real contacts
+        # (rejections that had a genuine damping minimum the dwell drove past),
+        # confirms nothing new above z=0.6 where the bed cannot be, and loses no
+        # contact that used to confirm.  At 0.15 it also rescues 115 but lets one
+        # halt at z=1.90 confirm at +16%, which would put a mesh point 1.8mm out;
+        # at 0.25 it starts discarding real contacts.  Wider smoothing (K=7, 9,
+        # 13) only costs rescues without removing that false confirm.
+        default_drop = 0.20 if self.verify_contact_stat else 0.15
+        thresh = gcmd.get_float("VERIFY_DROP", default_drop, above=0., below=1.)
         # Hoisted: the salvage path needs the same confirm bar as the normal
         # one, and reading it in two places is how they drift apart.
         step_min = gcmd.get_float("VERIFY_STEP_SNR", self._verify_step_snr,
@@ -2859,6 +2898,38 @@ class HaltingContactProbe:
     # which let a halt 65um BELOW a confirmed contact fall through to the re-arm
     # path, where the clamped floor then sat above the ceiling and produced a
     # NEGATIVE travel span (observed 2026-08-07: "only -0.165mm of travel left").
+    @staticmethod
+    def _ramp_min_amp(zs, amps, k=5):
+        """Deepest damping the ramp actually reached, as a k-window moving
+        median in Z.
+
+        The contact DWELL sits at z_cand - VERIFY_DOWN, and measured over 24
+        verify captures on 2026-08-09 that lands 35-180um PAST the damping
+        minimum on 8 of them - far enough that the amplitude has climbed back to
+        or above the air level.  Real contacts were then read as "no drop" or as
+        an amplitude RISE: one trace reached a 39% minimum and was failed as
+        inverted coupling, another 27% and was rejected as a false halt.  The
+        ramp sweeps through the minimum every time; the verdict was just reading
+        the wrong windows.
+
+        Pooled across reps and sorted by Z, so both ramp directions and every rep
+        contribute samples near the minimum.  A moving MEDIAN rather than a bare
+        min: the minimum of many noisy windows is biased low and would invent
+        drops in air, which is the failure mode this must not introduce.
+        """
+        pairs = sorted(zip([float(z) for z in zs], [float(a) for a in amps]))
+        if not pairs:
+            return None
+        if len(pairs) < k:
+            return min(a for _, a in pairs)
+        best = None
+        for i in range(len(pairs) - k + 1):
+            w = sorted(a for _, a in pairs[i:i + k])
+            m = w[k // 2]
+            if best is None or m < best:
+                best = m
+        return best
+
     @staticmethod
     def _submerged_fraction(air_axes, ref_air):
         # Verify's 'air' plateau against the air level the SAME descent measured

@@ -2453,6 +2453,25 @@ excitation_frequency:
 #   stays silent until three contacts have been accepted (it has no reference
 #   before that), so a session starting on a weak spot cannot be caught. Set to
 #   0 to disable.
+#verify_contact_stat: 1
+#   Where the contact amplitude is read from during verification. 1 (the
+#   default) uses the deepest damping the ramp reached; 0 uses the dwell at the
+#   bottom of the ramp, which is what this did previously.
+#   The dwell sits at z_cand minus VERIFY_DOWN, and measured over 24 captures
+#   that lands 35-180um PAST the damping minimum on a third of them - far enough
+#   that the amplitude has climbed back to or above the air level, because
+#   pressing harder re-excites the structure. Real contacts then read as "no
+#   drop" or as an amplitude RISE: one capture reached a 39% damping minimum and
+#   was failed as inverted coupling, another 27% and was rejected as a false
+#   halt, which then triggered the re-arm cascade.
+#   Replayed over all 649 saved verify captures, this rescues 101 real contacts,
+#   confirms nothing new above z=0.6 where the bed cannot be, and loses no
+#   contact that previously confirmed.
+#verify_min_windows: 5
+#   Width, in detection windows, of the moving median used for the above. A
+#   moving median rather than a bare minimum, because the minimum of many noisy
+#   windows is biased low and would invent drops in air. Wider values (7, 9, 13)
+#   were replayed and only cost rescues without improving safety.
 #rearm_margin: 0.05
 #   Where the next descent restarts after a halt is REJECTED, as a distance
 #   (mm) ABOVE the rejected halt. It used to restart below, which skipped the
