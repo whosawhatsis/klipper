@@ -2389,12 +2389,21 @@ excitation_frequency:
 #   yields one independent estimate per direction, so raising this trades time
 #   for datapoints (and lets the up/down difference be measured). Each rep
 #   presses to the verification depth again.
-#verify_combine: 1
-#   1 (the default) reports the mean of the down-ramp and up-ramp contact
-#   estimates; 0 reports the down ramp alone. Averaging both is better measured
-#   (2.3um vs 2.9um pooled repeatability) and, more importantly, cancels the
-#   up/down bias, which varies with bed POSITION (+1..+20um seen) rather than
-#   being a fixed machine constant.
+#verify_combine: 2
+#   Which ramp direction the refined contact Z comes from. 2 (the default)
+#   reports the UP ramp alone, 1 the mean of both, 0 the down ramp alone.
+#   The up ramp is far more consistent, because of the signal rather than the
+#   estimator: descending, damping comes on gradually over ~120um and the
+#   contact edge is only a 3-7% step, so the search lands on a different window
+#   each rep and scatters by hundreds of um; ascending, the nozzle separates and
+#   the resonance snaps back, giving an 11-19% step that repeats to a few um.
+#   Note what up-only gives up: the mean cancelled the up/down bias by
+#   construction, and that bias varies with bed POSITION (+1..+20um seen, and
+#   sometimes negative) rather than being a fixed machine constant. Up-only
+#   inherits it. The trade is deliberate - the down ramp's scatter is larger -
+#   but it is worth revisiting against a print test.
+#   The older 2.3um vs 2.9um measurement favouring the mean compared it against
+#   DOWN-only; up-only was not in that comparison.
 #trace_dir:
 #   If set, every descent and every verification ramp is written to this
 #   directory as CSV (amplitude per detection window). Intended for offline
