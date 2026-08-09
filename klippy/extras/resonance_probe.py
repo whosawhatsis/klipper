@@ -20,6 +20,12 @@ from .homing import HomingMove
 from .resonance_tester import TestAxis, ResonanceTestExecutor
 
 AXIS_INDEX = {'x': 0, 'y': 1, 'z': 2}
+# Module level, because TWO classes need it: the live endstop scores every axis
+# during the descent, and verify scores every axis on the ramp.  It lived only
+# on _HostResonanceEndstop, so the verify path referenced self.AXIS_COUNT on
+# HaltingContactProbe, where it does not exist - an AttributeError inside a
+# probe, which shuts the printer down (2026-08-09).
+N_AXES = 3
 
 # Required methods on the accelerometer chip
 SENSOR_API = ('start_internal_client',)
@@ -1208,7 +1214,7 @@ class _HostResonanceEndstop:
     # characterize_amplitude dwell test) - a consistently noisy cross axis
     # could in principle nuisance-trigger slightly early; watch for this in
     # hardware validation before trusting it unattended on a new axis/mode.
-    AXIS_COUNT = 3
+    AXIS_COUNT = N_AXES
 
     def __init__(self, rprobe, steppers, t0):
         import numpy as np
@@ -2104,7 +2110,7 @@ class HaltingContactProbe:
         # contact rejected on the one channel that could not see it.  That false
         # REJECTION is what feeds the re-arm walk-down below, so this is the
         # upstream half of that bug.
-        cols = [data[:, 1 + a] for a in range(self.AXIS_COUNT)]
+        cols = [data[:, 1 + a] for a in range(N_AXES)]
         wamps, wk = _window_amps_tagged(times, cols, f, win_n,
                                         max(1, win_n // 2), seg_end)
         wtag = tag_arr[wk]
