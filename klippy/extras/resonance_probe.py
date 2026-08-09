@@ -2672,7 +2672,26 @@ class HaltingContactProbe:
             # instead of plowing past.  The cost is repeated false halts and a
             # point that eventually fails - which is the cheaper failure, and
             # the same trade already made for the corroborated case above.
-            cur_ceiling = min(ceiling, contact_z + self.rearm_margin)
+            #
+            # The ceiling must also leave a descent room to MEASURE.  Once a
+            # contact is confirmed at this point the floor rises to
+            # prior_z - tol, and a rejection just above it can leave less runway
+            # than the minimum descent span - which fails the SECOND sample at
+            # every point whose first halt is a false one above the contact.
+            # Observed 2026-08-09 at (60,100): re-arm ceiling 0.218, floor
+            # 0.064, 0.154mm of travel where 0.197mm is needed.  That killed a
+            # point that had already produced one good sample, and with it the
+            # mesh.
+            #
+            # Starting HIGHER skips nothing - re-traversing the whole band is
+            # the point of re-arming upward - so raise the ceiling to whatever
+            # the runway needs, bounded by where the descent started.
+            need = self._min_descent_span(descend_speed, self.warmup,
+                                          self.detect_cycles,
+                                          self.excitation_freq)
+            cur_ceiling = min(ceiling,
+                              max(contact_z + self.rearm_margin,
+                                  z_floor + need))
             # That clamp can leave less travel than a descent needs to measure
             # anything.  Measured 2026-08-07: a rejection at z=0.1183 put the
             # ceiling at -0.0317 and the clamped floor at -0.1291 - 0.097mm of
@@ -2681,9 +2700,6 @@ class HaltingContactProbe:
             # the bed were out of reach.  A descent that cannot succeed should
             # not be attempted: fail the point here, where a mesh can nudge off
             # it, and say why.
-            need = self._min_descent_span(descend_speed, self.warmup,
-                                          self.detect_cycles,
-                                          self.excitation_freq)
             if cur_ceiling - z_floor < need:
                 # Out of usable travel.  Stop re-arming, but return the SAME
                 # "no contact" result a failed descent gives rather than
