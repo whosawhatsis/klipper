@@ -2007,8 +2007,27 @@ class HaltingContactProbe:
             raise gcmd.error("verify: segment bookkeeping desync"
                              " (segs=%d tags=%d reps=%d)"
                              % (len(segs), len(tags), len(rep_ids)))
+        # Verify runs on the DRIP path only because drip_move_sequence is what
+        # returns per-segment end times, which the window tagging below needs -
+        # not because it wants drip semantics.  It inherited drip's shallow
+        # 100ms look-ahead as a side effect, and that shallow margin is what
+        # made verify_reps=3 shut the MCU down: six 'Timer too close' faults on
+        # 2026-08-07, with buffer_time pinned at 0.000 for ~10s beforehand, the
+        # accelerometer streaming a bulk batch every 2.6ms, and a reactor GC
+        # logged 1.2s before one of them.  More reps did not raise the risk per
+        # moment, they tripled the time spent in a window with no slack.
+        #
+        # Nothing here needs a prompt halt - the completion is never signalled
+        # on this path (only the descent completes it, on contact) - so the
+        # over-travel that a deep buffer costs the descent costs verify
+        # nothing.  0.5s is in line with what a NORMAL move gets from the
+        # background flusher (BGFLUSH_HIGH_TIME 0.4s, BGFLUSH_SG_HIGH_TIME
+        # 0.7s); going much beyond that is outside anything Klipper does and
+        # would just trade this for MCU queue pressure.
+        drip_t = gcmd.get_float("VERIFY_DRIP_TIME", 0.5, minval=0.) or None
         samples, seg_times, _ = self._run_bounded_vibration(
-            gcmd, segs, f, ramp_speed, peakv + ramp_speed + 1., accel + 1.)
+            gcmd, segs, f, ramp_speed, peakv + ramp_speed + 1., accel + 1.,
+            drip_time=drip_t)
         toolhead.manual_move([x0, y0, z_hi], lift_speed)
         toolhead.wait_moves()
         data = np.asarray(samples, dtype=np.float64)
