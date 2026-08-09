@@ -2918,7 +2918,46 @@ class HaltingContactProbe:
             k = self._xy_key(x0, y0)
             prev = rp._accepted_at.get(k)
             rp._accepted_at[k] = z if prev is None else max(prev, z)
+        self._log_contact(gcmd, z, x0, y0)
         return z
+
+    # Ledger of every accepted contact, with BOTH ramp estimates.
+    #
+    # Every verify computes a down-ramp and an up-ramp contact height and then
+    # throws one away.  Recording both means a whole mesh's worth of "what would
+    # the other estimator have said" comes from ONE probing pass - the same
+    # contacts, so the estimator is the only thing that differs.  Re-probing to
+    # get the comparison would confound it with run-to-run scatter, which at a
+    # single point has been measured at 206um: the same size as the effect.
+    #
+    # It is also the raw material for the down/up BIAS check: 0.6um on a
+    # trustworthy contact against 121 and 494um on two that reported a negative
+    # contact height.
+    def _log_contact(self, gcmd, z, x0, y0):
+        rp = self.printer.lookup_object('resonance_probe', None)
+        tdir = getattr(rp, 'trace_dir', None)
+        if not tdir or x0 is None or y0 is None:
+            return
+        d = self._verify_detail or {}
+        try:
+            path = os.path.join(tdir, 'contacts.csv')
+            new_file = not os.path.exists(path)
+            f = open(path, 'a')
+            try:
+                if new_file:
+                    f.write('x,y,z_reported,z_down,z_up,bias,down_spread,'
+                            'up_spread,reps,freq\n')
+                fmt = lambda v: ('' if v is None else '%.6f' % v)
+                f.write('%.3f,%.3f,%.6f,%s,%s,%s,%s,%s,%d,%.2f\n'
+                        % (x0, y0, z, fmt(d.get('down')), fmt(d.get('up')),
+                           fmt(d.get('bias')), fmt(d.get('down_spread')),
+                           fmt(d.get('up_spread')), d.get('reps', 0),
+                           self.excitation_freq))
+            finally:
+                f.close()
+        except Exception as e:
+            # A ledger is diagnostics; it must never take the printer down.
+            _dbg(gcmd, "contact ledger write failed: %s" % e)
 
     # Refine near the halt anchor for the drip descent, whose oscillation ramps
     # up slowly (the lookahead eases into the reversals).  The baseline is taken
