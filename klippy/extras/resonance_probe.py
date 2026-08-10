@@ -3670,7 +3670,23 @@ class HaltingContactProbe:
                     per_axis.append(None)
                     continue
                 baseline = float(np.median(air))
-                drop = max(0., 1. - float(np.median(contact)) / max(baseline, 1e-9))
+                # Contact level from the deepest damping the ramp reached, not
+                # from the dwell at the bottom of it - the same fix verify got.
+                # The dwell sits at contact_z - down_margin, and the damping
+                # cliff is 110-150um BELOW contact, so a shallow dwell measures
+                # in the flat region before damping starts and reports ~0% for a
+                # mode that damps perfectly well.  Measured 2026-08-09: the grid
+                # survey scored 172.9 Hz at 0% on all three axes at (100,25),
+                # and a mesh at that exact point and frequency measured -43% and
+                # -47% with SNR 21.  Both of that survey's "blind spots" were
+                # this artifact.
+                ramp_m = m & ((wtag == 'down') | (wtag == 'contact')
+                              | (wtag == 'up'))
+                rmin = (self._ramp_min_amp(wz[ramp_m], wamp[ramp_m],
+                                           self.verify_min_windows)
+                        if int(ramp_m.sum()) else None)
+                level = rmin if rmin is not None else float(np.median(contact))
+                drop = max(0., 1. - level / max(baseline, 1e-9))
                 noise = float(np.std(air)) / max(baseline, 1e-9)
                 # MOVING regime, measured against its own reference.  The live
                 # halt happens while descending, where ring-down dilutes the
