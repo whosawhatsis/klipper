@@ -189,7 +189,7 @@ def _dft_amp(t, signal, freq):
     import numpy as np
     s = signal - signal.mean()
     # float(): this is the one place every amplitude leaves numpy.  A numpy
-    # amplitude propagates astonishingly far - the retune's parabolic peak
+    # amplitude propagates astonishingly far - a parabolic peak
     # interpolation turns it into a numpy FREQUENCY, which becomes segment
     # accels and positions, then move times, then print_time, and finally the
     # temperature callback's read_time; heaters.py then computes
@@ -281,7 +281,7 @@ def _dbg(gcmd, msg):
 
 # gcmd wrapper that swallows respond_info (all other access passes through to
 # the originating command) so a fixed-frequency driven-scan test does not print
-# a "Testing frequency" line per step during a retune.
+# a "Testing frequency" line per step during a sweep.
 class _QuietGCmd:
     def __init__(self, gcmd):
         self._gcmd = gcmd
@@ -698,28 +698,32 @@ class ResonanceProbe:
         self._amp_is_default = config.get('probe_amplitude', None) is None
         self.probe_amplitude = config.getfloat('probe_amplitude', default_amp,
                                                above=0.)
-        # Per-session auto re-tune: before each probe session, run a short
-        # continuous frequency sweep spanning +/-retune_range around the
-        # *configured* excitation_frequency and adopt the spectral peak on the
-        # monitored axis.  0 = disabled.  Tracks environmental drift without a
-        # manual FIND_FREQ.
         self._base_freq = self.excitation_freq
-        self.retune_range = config.getfloat('retune_range', 0., minval=0.)
-        # retune_hz_per_sec is retained for config compatibility; the retune now
-        # uses a driven-response scan (see _retune) rather than a swept PSD.
-        self.retune_hz_per_sec = config.getfloat('retune_hz_per_sec', 1.,
-                                                 above=0., maxval=2.)
-        # Driven-scan retune: frequency step (Hz, peak parabolically interpolated)
-        # and the excitation dwell per step.
-        self.retune_step = config.getfloat('retune_step', 1., above=0.)
-        self.retune_time = config.getfloat('retune_time', 0.4, above=0.05)
+        # NO auto re-tune.  It used to sweep +/-retune_range at session start and
+        # adopt the peak IN-AIR driven response, on the assumption that the
+        # loudest mode is the best detector.  That assumption is false, and the
+        # grid survey of 2026-08-09 shows it directly: the loudest in-air mode at
+        # this machine's centre is 65.5 Hz, and 65.5 Hz is a POOR detector
+        # (0.0x cross-axis margin there, and 0% drop at two grid points), while
+        # 172.9 Hz wins 6 of 9 points on contact damping.  Calibration's own
+        # message says it - "chose 212.2 Hz by contact damping over the loudest
+        # in-air peak (65.5 Hz)".
+        #
+        # Detection quality is a property of how contact DAMPS a mode, which can
+        # only be measured by touching the bed.  An in-air proxy cannot see it,
+        # so retune could walk the excitation frequency away from a good detector
+        # toward a loud one.  It also scanned a single configured axis, and modes
+        # exist that are strong on one channel and absent on another.
+        #
+        # Use RESONANCE_PROBE_SURVEY_MESH / CALIBRATE_MESH to choose a frequency
+        # from contact data instead.
         # Optional per-point excitation frequency: a mesh of frequencies whose
         # coordinate extents are borrowed from [bed_mesh] (mesh_min/mesh_max), so
         # there is no redundant extent here.  Rows = Y (front->back), columns = X,
         # matching bed_mesh's ordering.  A degenerate dimension broadcasts: an Nx1
         # column varies with Y only, a 1xM row with X only, a 1x1 mesh is constant
         # (== the scalar excitation_frequency).  Unset -> use the scalar (which
-        # the per-session retune may still adjust).
+        # this is the frequency actually used).
         self._freq_mesh = None
         self._freq_mesh_interp = config.getchoice(
                 'freq_mesh_interp',
@@ -729,7 +733,7 @@ class ResonanceProbe:
                                               parser=float)
             # Rows MAY be ragged: a row with a single value is constant across X
             # at that Y, so only rows that actually vary across X carry multiple
-            # X-points (and only those cost extra retunes).
+            # X-points.
             if not self._freq_mesh or any(len(r) < 1
                                           for r in self._freq_mesh):
                 raise config.error(
@@ -737,11 +741,7 @@ class ResonanceProbe:
                     % (config.get_name(),))
         self._bed_mesh = None
         self._reported_freq = None
-        # Session mesh: a mutable copy of freq_mesh whose cells are retuned lazily
-        # (None = use the configured freq_mesh as-is).  _retuned tracks which
-        # cells have already been retuned this session.  Both reset per session.
-        self._active_mesh = None
-        self._retuned = set()
+
         self.printer.register_event_handler('klippy:connect',
                                             self._handle_connect)
         # Standard probe interface (PROBE command, bed mesh, etc.)
@@ -826,12 +826,7 @@ class ResonanceProbe:
                       % (speed * 100.,))
 
     def start_probe_session(self, gcmd):
-        # Once per session: (optionally) re-tune.  With a freq_mesh + retune, each
-        # mesh cell is retuned LAZILY at the first probe point that needs it (no
-        # upfront detour - see _apply_point_frequency); here we just start a
-        # mutable session copy.  Without a mesh, retune the single scalar now.
         self._reported_freq = None
-        self._retuned = set()
         # The weak-excitation reference is per SESSION, not per klippy uptime:
         # it must compare like with like.  A bed mesh is one session, so points
         # are judged against their own run.  Carrying it further would judge a
@@ -840,17 +835,8 @@ class ResonanceProbe:
         # every probe at temperature.
         self._air_history = {}
         self._accepted_at = {}
-        # Before anything is measured, including the retune sweep below.
+        # Before anything is measured.
         self._quiet_part_fan(gcmd)
-        if self.retune_range > 0. and self._freq_mesh is not None:
-            self._check_axis_safety(gcmd)
-            self._active_mesh = [list(r) for r in self._freq_mesh]
-        else:
-            self._active_mesh = None
-            if self.retune_range > 0.:
-                self._check_axis_safety(gcmd)
-                self._goto_start_height(gcmd)
-                self._retune(gcmd)
         return self.probe_session.start_probe_session(gcmd)
     def get_status(self, eventtime):
         # Sanitized: this dict goes straight to the webhook/JSON layer.
@@ -947,15 +933,14 @@ class ResonanceProbe:
     # A degenerate mesh dimension (count 1) contributes no interpolation on that
     # axis, so an Nx1 column is X-independent and a 1xM row is Y-independent.
     # Returns None when no usable mesh is configured (caller keeps the current
-    # frequency, e.g. a per-session retune result).
+    # frequency).
     def _freq_at(self, x, y):
         if self._freq_mesh is None or self._bed_mesh is None:
             return None
         bmc = self._bed_mesh.bmc
         xmin, ymin = bmc.mesh_min
         xmax, ymax = bmc.mesh_max
-        mesh = self._active_mesh if self._active_mesh is not None \
-            else self._freq_mesh
+        mesh = self._freq_mesh
         nearest = self._freq_mesh_interp == 'nearest'
         def frac(v, lo, hi, n):
             if n <= 1 or hi <= lo:
@@ -984,11 +969,6 @@ class ResonanceProbe:
     def _apply_point_frequency(self, gcmd, x, y):
         if self._freq_mesh is None or self._bed_mesh is None:
             return
-        # Lazy per-cell retune: the toolhead is already at the probe point, so if
-        # retuning and the nearest mesh cell has not been retuned this session,
-        # refine it right here (no detour) before reading the frequency.
-        if self.retune_range > 0. and self._active_mesh is not None:
-            self._retune_cell_if_needed(gcmd, x, y)
         f = self._freq_at(x, y)
         if f is None:
             return
@@ -998,123 +978,6 @@ class ResonanceProbe:
             gcmd.respond_info("Resonance probe: point (%.1f, %.1f) using"
                               " %.1f Hz" % (x, y, f))
 
-    # Driven (steady-state) response amplitude of the monitored axis: vibrate in
-    # place at 'freq' (default: the current excitation frequency) and return the
-    # single-bin DFT magnitude.  Unlike a swept PSD this measures how hard the
-    # toolhead actually resonates when DRIVEN at freq - the right basis for the
-    # probe frequency (a swept PSD can pick a shoulder mode that is quiet when
-    # driven).  The DC is recomputed every call (so a contact-induced DC shift
-    # can't mask the drop) and only the excitation bin is kept (rejecting contact
-    # friction noise), so it is far cleaner than the MCU's fixed-DC broadband
-    # envelope.  quiet=False surfaces the executor's per-step log line;
-    # require=True raises instead of returning 0 when no data is captured.
-    def _measure_response_at(self, gcmd, freq=None, duration=None,
-                             dwell=0.050, quiet=True, require=False):
-        import numpy as np
-        if freq is None:
-            freq = self.excitation_freq
-        toolhead = self.printer.lookup_object('toolhead')
-        toolhead.wait_moves()
-        toolhead.dwell(dwell)
-        aclient = self.chip.start_internal_client()
-        accel = self.accel_per_hz * freq
-        test_seq = _gen_fixed_freq(freq, accel, duration)
-        cmd = _QuietGCmd(gcmd) if quiet else gcmd
-        try:
-            self.executor.run_test(test_seq, self.vibrate_dir, cmd)
-        finally:
-            aclient.finish_measurements()
-        samples = aclient.get_samples()
-        if not samples:
-            if require:
-                raise gcmd.error("Accelerometer measured no data while probing")
-            return 0.
-        data = np.asarray(samples, dtype=np.float64)
-        t = data[:, 0] - data[0, 0]
-        return _dft_amp(t, data[:, 1 + self.output_index], freq)
-
-    # Scan the driven response over center +/- retune_range (retune_step Hz) and
-    # return (peak_freq, peak_response), the peak parabolically interpolated
-    # between steps.  Restores the toolhead position afterward (the fixed-freq
-    # pulses drift it laterally).
-    def _driven_peak(self, gcmd, center, speed):
-        toolhead = self.printer.lookup_object('toolhead')
-        start_pos = toolhead.get_position()
-        step = self.retune_step
-        n = max(1, int(round(self.retune_range / step)))
-        freqs = [center + k * step for k in range(-n, n + 1)
-                 if center + k * step >= 1.]
-        resp = []
-        try:
-            for f in freqs:
-                resp.append(self._measure_response_at(gcmd, f, self.retune_time))
-        finally:
-            toolhead.manual_move(list(start_pos[:3]), speed)
-            toolhead.wait_moves()
-        if not resp or max(resp) <= 0.:
-            return center, 0.
-        i = resp.index(max(resp))
-        best = freqs[i]
-        if 0 < i < len(freqs) - 1:
-            y0, y1, y2 = resp[i-1], resp[i], resp[i+1]
-            den = y0 - 2.*y1 + y2
-            if den < 0.:
-                d = 0.5 * (y0 - y2) / den
-                if -1. <= d <= 1.:
-                    best = freqs[i] + d * step
-        return best, resp[i]
-
-    # Refine the single scalar frequency to the current driven-response peak over
-    # a narrow band (retune_range) and adopt it.
-    def _retune(self, gcmd):
-        speed = (self.probe_start_speed
-                 or self.param_helper.get_probe_params(gcmd)['lift_speed'])
-        peak, resp = self._driven_peak(gcmd, self._base_freq, speed)
-        if resp <= 0.:
-            gcmd.respond_info("Resonance re-tune: no response; keeping %.1f Hz"
-                              % (self.excitation_freq,))
-            return
-        gcmd.respond_info("Resonance re-tune: %.1f Hz (was %.1f), driven scan"
-                          " %.1f +/- %.1f Hz on accel %s-axis"
-                          % (peak, self._base_freq, self._base_freq,
-                             self.retune_range, 'xyz'[self.output_index]))
-        self._set_excitation_freq(peak)
-
-    # Retune the freq_mesh cell nearest to (x, y) if it has not been retuned this
-    # session, refining it at the current probe point (driven-response).  Each
-    # cell is retuned once, the first time a probe point falls nearest to it - so
-    # the retune count equals the number of freq_mesh cells actually used, and
-    # every retune happens where the probe already is (no detour; a flat/collapsed
-    # row is one cell = one retune for the whole row).  _driven_peak restores the
-    # toolhead to this probe point when done.
-    def _retune_cell_if_needed(self, gcmd, x, y):
-        bmc = self._bed_mesh.bmc
-        xmin, ymin = bmc.mesh_min
-        xmax, ymax = bmc.mesh_max
-        mesh = self._active_mesh
-        def nidx(v, lo, hi, n):
-            if n <= 1 or hi <= lo:
-                return 0
-            t = (v - lo) / (hi - lo) * (n - 1)
-            return min(max(int(round(t)), 0), n - 1)
-        iy = nidx(y, ymin, ymax, len(mesh))
-        ix = nidx(x, xmin, xmax, len(mesh[iy]))
-        if (iy, ix) in self._retuned:
-            return
-        self._retuned.add((iy, ix))
-        speed = (self.probe_start_speed
-                 or self.param_helper.get_probe_params(gcmd)['lift_speed'])
-        old = mesh[iy][ix]
-        peak, resp = self._driven_peak(gcmd, old, speed)
-        if resp > 0.:
-            mesh[iy][ix] = peak
-        gcmd.respond_info("  retune cell [%d,%d] @ (%.1f, %.1f): %.1f -> %.1f Hz"
-                          % (iy, ix, x, y, old, mesh[iy][ix]))
-
-    # Descend in small steps, detecting contact while stationary at each step
-    # via the host-side amplitude measurement above.  Z only moves between
-    # measurements, so nothing halts a move and the motion queue cannot desync.
-    # Resolution is one probe_step.
     def _stepwise_probe(self, gcmd):
         self._check_axis_safety(gcmd)
         toolhead = self.printer.lookup_object('toolhead')

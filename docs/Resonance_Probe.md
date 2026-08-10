@@ -220,17 +220,6 @@ warmup: 0.8
 #probe_start_speed:
 #   Speed of the (non-vibrating) rapid move to probe_start_z.  Defaults to the
 #   probe lift_speed.
-#retune_range: 0
-#   Per-probe-session re-tune: before each session, sweep +/-retune_range Hz
-#   around the configured excitation_frequency and adopt the measured peak.
-#   0 (the default) disables it.  Useful when the printer is moved or
-#   reconfigured often, since the resonance drifts with the environment;
-#   unnecessary if nothing changes.  See "Re-tuning for drift" below.
-#retune_step: 1.0
-#   Frequency step (Hz) of the re-tune's driven-response scan; the peak is
-#   parabolically interpolated between steps.
-#retune_time: 0.4
-#   Excitation dwell (s) per step of the re-tune scan.
 #freq_mesh:
 #   Optional per-point excitation frequency, for machines whose resonance shifts
 #   enough across the bed that one frequency will not do.  A grid of frequencies
@@ -529,15 +518,12 @@ temperature, belt tension, even moving the printer to a new location).  If you
 leave the printer set up and untouched, the calibrated `excitation_frequency` is
 stable and no re-tuning is needed.
 
-If instead the machine is moved or reconfigured frequently, set `retune_range`
-to a few Hz.  At the start of every probe session the probe then scans the
-driven response over `excitation_frequency` +/- `retune_range` (a fixed-frequency
-scan stepped by `retune_step`, dwelling `retune_time` per step, with the peak
-parabolically interpolated) and excites the measured peak instead.  A *driven*
-scan is used rather than a swept spectrum because it measures how hard the
-toolhead actually resonates when driven at each frequency, which is the property
-the probe uses.  The toolhead position is restored before probing, so the cost is
-only a second or two.  Leaving `retune_range` at 0 disables the step.
+If the machine is moved or reconfigured, re-measure with
+`RESONANCE_PROBE_SURVEY_MESH` (report-only) or `RESONANCE_PROBE_CALIBRATE_MESH`
+(commits a frequency).  There is deliberately no automatic per-session re-tune:
+detection quality is a property of how contact DAMPS a mode, and the only way to
+measure that is to touch the bed.  An in-air proxy gets it wrong - on the
+reference machine the loudest in-air mode is one of the worst detectors.
 
 When a `freq_mesh` is configured, re-tuning is done *lazily per mesh cell*: the
 first probe point that falls nearest to a given cell re-tunes that cell in place
@@ -730,10 +716,10 @@ and validated on hardware, and what is still in progress, as of this writing:
   version of the same mechanism for any touch probe (not just this one) is
   planned as a separate, later change.
 * **`RESONANCE_PROBE_RETUNE` command.**  Break the pre-probe re-tune (currently
-  the `retune_range` option inside every probe session) out into a standalone
+  a standalone
   command that can be placed in the user's print-start macro - an abbreviated
   re-calibration of just the frequency.  Keeps probing and tuning as separate
-  concerns; `retune_range` remains available for hands-off use.
+  concerns.
 * **Continuous-excitation contact reversal (motion enhancement).**  Today the
   descent *halts* (stops) on contact.  A future toolhead extension could let the
   contact detector *reverse* the move instead, so the excitation runs

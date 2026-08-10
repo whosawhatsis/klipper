@@ -2517,18 +2517,6 @@ excitation_frequency:
 #   instead. While a confirmed contact exists at the point, re-arming is also
 #   never allowed to descend more than this distance past it. Set to 0 to
 #   disable.
-#retune_range: 0
-#   If > 0, scan the driven response +/- this many Hz around excitation_frequency
-#   at the start of each probe session and adopt the measured peak (tracks
-#   environmental drift). 0 disables it. With a freq_mesh, each mesh cell is
-#   re-tuned lazily at the first probe point that uses it.
-#retune_hz_per_sec: 1.0
-#   Retained for compatibility (the re-tune now uses a driven-response scan).
-#retune_step: 1.0
-#   Frequency step (Hz) of the re-tune scan; the peak is interpolated between
-#   steps.
-#retune_time: 0.4
-#   Excitation dwell (s) per step of the re-tune scan.
 #freq_mesh:
 #   Optional per-point excitation frequency (for a bed where one frequency will
 #   not detect well everywhere). A grid of frequencies whose extents come from the
