@@ -585,6 +585,11 @@ class ResonanceProbe:
                                                  minval=0, maxval=1)
         self.verify_min_windows = config.getint('verify_min_windows', 5,
                                                 minval=1, maxval=51)
+        # Most segments one verify sequence may emit.  See the guard in
+        # _verify_contact_moving: 1383 completes meshes, 3595 shut the MCU down
+        # twice, so this sits between them rather than at a measured edge.
+        self.verify_seg_budget = config.getint('verify_seg_budget', 2000,
+                                               minval=200)
         # Edge-offset overshoot test.  OFF by default (0): the SLOPE needs no
         # calibration but the BASELINE does, and a wrong baseline rejects good
         # contacts.  Run probes with VERBOSE=1, read the reported "edge sits
@@ -1687,6 +1692,7 @@ class HaltingContactProbe:
         self.rearm_margin = getattr(rp, 'rearm_margin', 0.05)
         self.verify_contact_stat = getattr(rp, 'verify_contact_stat', 1)
         self.verify_min_windows = getattr(rp, 'verify_min_windows', 5)
+        self.verify_seg_budget = getattr(rp, 'verify_seg_budget', 2000)
         self.verify_overshoot_baseline = getattr(
             rp, 'verify_overshoot_baseline', 0.)
         self.verify_overshoot_tol = getattr(rp, 'verify_overshoot_tol', 0.05)
@@ -1906,14 +1912,14 @@ class HaltingContactProbe:
                                trigger_axis=None):
         import numpy as np
         toolhead = self.printer.lookup_object('toolhead')
-        # 0.35, not the 0.15 this shipped with.  The ramp can only measure an
-        # overshoot while the contact cliff stays inside it, and the cliff sits
-        # ~0.11mm BELOW true contact on this machine (flat-then-cliff).  With
-        # up=0.15 the edge-offset test saturates at ~0.26mm of overshoot and the
-        # air plateau at the top is often still under the surface, which is what
-        # made the plateau test blind below 0.15mm.  Widening the top of the
-        # ramp fixes both, and costs one extra ramp-length of time per rep.
-        up = gcmd.get_float("VERIFY_UP", 0.35, above=0.)
+        # The top of the ramp only has to reach clean AIR.  It was raised to
+        # 0.35 for the edge-offset overshoot test, which ships DISABLED
+        # (verify_overshoot_baseline=0) and was largely superseded by reading
+        # contact from the ramp minimum - while the extra 0.20mm of travel costs
+        # a third more segments per rep, and segments are what shut the MCU
+        # down.  The DOWN side still has to clear the damping cliff; that is
+        # VERIFY_DOWN's job, not this one.
+        up = gcmd.get_float("VERIFY_UP", 0.15, above=0.)
         if up_override is not None:
             up = up_override
         down = gcmd.get_float("VERIFY_DOWN", 0.25, above=0.)
@@ -1942,6 +1948,32 @@ class HaltingContactProbe:
         ramp_t = max(z_travel / ramp_speed, 2. * half_dt)
         ramp_segs = max(6, int(round(ramp_t / half_dt)))
         warm_segs = max(4, int(round(self.warmup / half_dt)))
+        # SEGMENT BUDGET GUARD - the same one characterize_amplitude has had
+        # since two MCU shutdowns taught it, applied to the path that never got
+        # it.  Every segment is one lateral half-cycle and the host must keep the
+        # MCU step buffer fed for all of them; overrunning is 'Timer too close',
+        # which shuts the printer down and needs a FIRMWARE_RESTART.
+        #
+        # This is why that guard "has never fired": it only ever covered one of
+        # the two paths that emit these sequences.  At 172.9Hz with reps=3 and
+        # the old 0.35 up-ramp, verify emitted ~3595 segments in one continuous
+        # sequence - and reps=3 killed a mesh twice on 2026-08-09, at the same
+        # point both times, while reps=1 (~1383) has completed meshes reliably.
+        # The budget is bracketed by those two observations, not pinpointed.
+        #
+        # Cap the REPS, as the other guard caps cycles: fewer reps means fewer
+        # independent estimates, where an overrun destroys the run.
+        per_rep = 2 * ramp_segs + 2 * dwell_segs
+        budget = gcmd.get_int("VERIFY_SEG_BUDGET", self.verify_seg_budget,
+                              minval=200)
+        max_reps = max(1, (budget - warm_segs) // max(per_rep, 1))
+        if reps > max_reps:
+            gcmd.respond_info(
+                "verify: capping VERIFY_REPS %d -> %d at %.1fHz (%d segments"
+                " per rep + %d warm-up would exceed the %d-segment budget and"
+                " risk an MCU 'Timer too close' shutdown)"
+                % (reps, max_reps, f, per_rep, warm_segs, budget))
+            reps = max_reps
         segs = []
         tags = []
         rep_ids = []
