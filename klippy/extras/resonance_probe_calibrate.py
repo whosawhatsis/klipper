@@ -13,7 +13,7 @@
 import bisect, math, random
 from . import shaper_calibrate, analog_contact
 from .resonance_probe import HaltingContactProbe, _gen_fixed_freq, \
-    _plain, _halt_floor, _halt_headroom
+    _plain, _halt_floor, _halt_headroom, CONTACT_UP_MM, CONTACT_DOWN_MM
 from .resonance_tester import (TestAxis, _parse_axis,
                                VibrationPulseTestGenerator,
                                ResonanceTestExecutor)
@@ -1013,8 +1013,8 @@ class ResonanceProbeCalibrate:
         # actually references, though it does make the measured drops slightly
         # LARGER than previously saved calibrations, since the air baseline
         # rides the height-dependent rise.
-        up_margin = gcmd.get_float("CONTACT_UP", 0.15, above=0.)
-        down_margin = gcmd.get_float("CONTACT_DOWN", 0.20, above=0.)
+        up_margin = gcmd.get_float("CONTACT_UP", CONTACT_UP_MM, above=0.)
+        down_margin = gcmd.get_float("CONTACT_DOWN", CONTACT_DOWN_MM, above=0.)
         cycles = gcmd.get_int("CONTACT_CYCLES", 4, minval=1)
         n_levels = gcmd.get_int("CONTACT_LEVELS", 5, minval=1)
         min_drop = gcmd.get_float("CONTACT_MIN_DROP", 0.10, above=0., below=1.)
@@ -1615,8 +1615,8 @@ class ResonanceProbeCalibrate:
                              " %.3f; raise the nozzle" % (ceiling, z_min))
         warmup = self._warmup(gcmd, "CONTACT_WARMUP")
         speed = gcmd.get_float("CONTACT_SPEED", 0.1, above=0., maxval=5.)
-        up_margin = gcmd.get_float("CONTACT_UP", 0.15, above=0.)
-        down_margin = gcmd.get_float("CONTACT_DOWN", 0.20, above=0.)
+        up_margin = gcmd.get_float("CONTACT_UP", CONTACT_UP_MM, above=0.)
+        down_margin = gcmd.get_float("CONTACT_DOWN", CONTACT_DOWN_MM, above=0.)
         cycles = gcmd.get_int("CONTACT_CYCLES", 4, minval=1)
         min_drop = gcmd.get_float("CONTACT_MIN_DROP", 0.10, above=0., below=1.)
         target_noise = gcmd.get_float("CONTACT_TARGET_NOISE", 0.06,
@@ -2503,8 +2503,8 @@ class ResonanceProbeCalibrate:
         speed = gcmd.get_float("CONTACT_SPEED", 0.1, above=0., maxval=5.)
         # Warmup reused from the probe (its ring-up time is the same physics).
         warmup = self._warmup(gcmd, "CONTACT_WARMUP")
-        up_margin = gcmd.get_float("CONTACT_UP", 0.15, above=0.)
-        down_margin = gcmd.get_float("CONTACT_DOWN", 0.20, above=0.)
+        up_margin = gcmd.get_float("CONTACT_UP", CONTACT_UP_MM, above=0.)
+        down_margin = gcmd.get_float("CONTACT_DOWN", CONTACT_DOWN_MM, above=0.)
         cycles = gcmd.get_int("CONTACT_CYCLES", 4, minval=1)
         min_drop = gcmd.get_float("CONTACT_MIN_DROP", 0.10, above=0., below=1.)
         target_noise = gcmd.get_float("CONTACT_TARGET_NOISE", 0.06, above=0.,

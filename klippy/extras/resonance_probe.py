@@ -27,6 +27,68 @@ AXIS_INDEX = {'x': 0, 'y': 1, 'z': 2}
 # probe, which shuts the printer down (2026-08-09).
 N_AXES = 3
 
+# Ramp geometry around a contact, shared by every path that measures one.
+#
+# Both numbers are sized by the SHAPE of this machine's contact event, not by
+# taste: the signal is flat for 110-150um below contact and then cliffs, so a
+# ramp has to clear that to see damping at all, and its air reference has to sit
+# clear of the transition or the baseline is already damped.  Margins of
+# 0.03/0.02 measured almost nothing - characterisation reported 0% for a mode a
+# mesh measured at -47%.
+#
+# They live here because they were wrong in two places independently: fixing
+# CONTACT_DOWN without CONTACT_UP left the air reference inside the transition,
+# three lines away in the same function.
+CONTACT_UP_MM = 0.15      # air reference above contact
+CONTACT_DOWN_MM = 0.25    # must clear the damping cliff below contact
+
+
+# Most segments one continuous vibrating sequence may emit.  Every segment is a
+# lateral half-cycle the host must keep fed; overrunning is an MCU 'Timer too
+# close' and a FIRMWARE_RESTART.  Bracketed by measurement on this machine:
+# ~1383 completes meshes reliably, ~3595 shut the MCU down twice.
+SEG_BUDGET = 2000
+
+
+def _cap_reps_for_budget(reps, per_rep, warm_segs, budget):
+    """Largest rep count fitting the segment budget (at least 1)."""
+    return max(1, min(reps, (budget - warm_segs) // max(per_rep, 1)))
+
+
+def _contact_levels(wamps, wtag, wz, mask, min_windows, ramp_min):
+    """Per-axis (air_level, contact_level, drop) from tagged ramp windows.
+
+    air     = median of the 'air' dwell windows
+    contact = the DEEPEST DAMPING the ramp reached, not the dwell at the bottom
+              of it - the dwell can sit past the damping minimum, where pressing
+              harder re-excites the structure and the level climbs back above
+              air.  That read real contacts as 'no drop' or as inverted
+              coupling.
+    drop    = signed fraction; negative means the amplitude ROSE on contact.
+
+    Shared so the fix cannot land on one measurement path and not the other,
+    which is exactly how it went the first time.
+    """
+    import numpy as np
+    air_m = mask & (wtag == 'air')
+    ramp_m = mask & ((wtag == 'down') | (wtag == 'contact') | (wtag == 'up'))
+    out = []
+    for w in wamps:
+        if int(air_m.sum()) < 2:
+            out.append(None)
+            continue
+        air = float(np.median(w[air_m]))
+        lvl = (ramp_min(wz[ramp_m], w[ramp_m], min_windows)
+               if int(ramp_m.sum()) else None)
+        if lvl is None:
+            dwell_m = mask & (wtag == 'contact')
+            if not int(dwell_m.sum()):
+                out.append(None)
+                continue
+            lvl = float(np.median(w[dwell_m]))
+        out.append((air, lvl, ((air - lvl) / air) if air > 1e-9 else 0.))
+    return out
+
 # Required methods on the accelerometer chip
 SENSOR_API = ('start_internal_client',)
 
@@ -1919,10 +1981,10 @@ class HaltingContactProbe:
         # a third more segments per rep, and segments are what shut the MCU
         # down.  The DOWN side still has to clear the damping cliff; that is
         # VERIFY_DOWN's job, not this one.
-        up = gcmd.get_float("VERIFY_UP", 0.15, above=0.)
+        up = gcmd.get_float("VERIFY_UP", CONTACT_UP_MM, above=0.)
         if up_override is not None:
             up = up_override
-        down = gcmd.get_float("VERIFY_DOWN", 0.25, above=0.)
+        down = gcmd.get_float("VERIFY_DOWN", CONTACT_DOWN_MM, above=0.)
         reps = gcmd.get_int("VERIFY_REPS", self._verify_reps, minval=1,
                             maxval=10)
         ramp_speed = gcmd.get_float("VERIFY_RAMP_SPEED", 0.5, above=0.,
@@ -1966,14 +2028,14 @@ class HaltingContactProbe:
         per_rep = 2 * ramp_segs + 2 * dwell_segs
         budget = gcmd.get_int("VERIFY_SEG_BUDGET", self.verify_seg_budget,
                               minval=200)
-        max_reps = max(1, (budget - warm_segs) // max(per_rep, 1))
-        if reps > max_reps:
+        capped = _cap_reps_for_budget(reps, per_rep, warm_segs, budget)
+        if capped < reps:
             gcmd.respond_info(
                 "verify: capping VERIFY_REPS %d -> %d at %.1fHz (%d segments"
                 " per rep + %d warm-up would exceed the %d-segment budget and"
                 " risk an MCU 'Timer too close' shutdown)"
-                % (reps, max_reps, f, per_rep, warm_segs, budget))
-            reps = max_reps
+                % (reps, capped, f, per_rep, warm_segs, budget))
+            reps = capped
         segs = []
         tags = []
         rep_ids = []
@@ -2068,18 +2130,13 @@ class HaltingContactProbe:
         contact_mask = wtag == 'contact'
         if int(air_mask.sum()) < 2 or int(contact_mask.sum()) < 1:
             return 0., 0., None, 0., False
-        air_axes = [float(np.median(w[air_mask])) for w in wamps]
         dwell_axes = [float(np.median(w[contact_mask])) for w in wamps]
-        # Read the contact level from the deepest damping the ramp reached, not
-        # from the dwell at the bottom of it - see _ramp_min_amp.
-        ramp_mask = (wtag == 'down') | (wtag == 'contact') | (wtag == 'up')
-        contact_axes = []
-        for a, w in enumerate(wamps):
-            rmin = (self._ramp_min_amp(wz[ramp_mask], w[ramp_mask],
-                                       self.verify_min_windows)
-                    if int(ramp_mask.sum()) else None)
-            contact_axes.append(rmin if (self.verify_contact_stat and
-                                         rmin is not None) else dwell_axes[a])
+        all_m = np.ones(len(wtag), dtype=bool)
+        levels = _contact_levels(wamps, wtag, wz, all_m,
+                                 self.verify_min_windows, self._ramp_min_amp)
+        air_axes = [(lv[0] if lv else 0.) for lv in levels]
+        contact_axes = [(lv[1] if (lv and self.verify_contact_stat)
+                         else dwell_axes[a]) for a, lv in enumerate(levels)]
         # Fractional STEP per axis, signed: positive = damped by contact (the
         # normal case), negative = amplitude ROSE (inverted coupling, which this
         # machine shows at some locations).  Magnitude is what carries evidence;
@@ -3701,24 +3758,19 @@ class HaltingContactProbe:
                 if len(air) < 3 or len(contact) < 2:
                     per_axis.append(None)
                     continue
-                baseline = float(np.median(air))
-                # Contact level from the deepest damping the ramp reached, not
-                # from the dwell at the bottom of it - the same fix verify got.
-                # The dwell sits at contact_z - down_margin, and the damping
-                # cliff is 110-150um BELOW contact, so a shallow dwell measures
-                # in the flat region before damping starts and reports ~0% for a
-                # mode that damps perfectly well.  Measured 2026-08-09: the grid
-                # survey scored 172.9 Hz at 0% on all three axes at (100,25),
-                # and a mesh at that exact point and frequency measured -43% and
-                # -47% with SNR 21.  Both of that survey's "blind spots" were
-                # this artifact.
-                ramp_m = m & ((wtag == 'down') | (wtag == 'contact')
-                              | (wtag == 'up'))
-                rmin = (self._ramp_min_amp(wz[ramp_m], wamp[ramp_m],
-                                           self.verify_min_windows)
-                        if int(ramp_m.sum()) else None)
-                level = rmin if rmin is not None else float(np.median(contact))
-                drop = max(0., 1. - level / max(baseline, 1e-9))
+                # SHARED with verify - see _contact_levels.  Both paths read
+                # the contact level from the deepest damping the ramp reached;
+                # the dwell at the bottom can sit past the damping minimum,
+                # where pressing re-excites the structure.  This measurement
+                # lived in two places and only one of them got fixed.
+                lv = _contact_levels([wamp], wtag, wz, m,
+                                     self.verify_min_windows,
+                                     self._ramp_min_amp)[0]
+                if lv is None:
+                    per_axis.append(None)
+                    continue
+                baseline, level, signed = lv
+                drop = max(0., signed)
                 noise = float(np.std(air)) / max(baseline, 1e-9)
                 # MOVING regime, measured against its own reference.  The live
                 # halt happens while descending, where ring-down dilutes the
