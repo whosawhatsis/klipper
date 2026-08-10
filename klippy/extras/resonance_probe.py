@@ -1081,9 +1081,24 @@ class ResonanceProbe:
         ceiling = (self.probe_start_z if self.probe_start_z is not None
                    else curz)
         start_speed = self.probe_start_speed or lift_speed
+        # MCU look-ahead depth for the descent.  This path - PROBE,
+        # PROBE_ACCURACY, BED_MESH_CALIBRATE - was the ONLY one that never
+        # passed one, so it ran on Klipper's 0.100s drip default while every
+        # calibration entry point passed 0.3 and verify passes 0.5.  Exactly
+        # backwards: the routine unattended path with hundreds of descents had
+        # the least margin, and the interactive diagnostics had the most.  A
+        # mesh died on 'ebb36: Timer too close' at the START of a descent on
+        # 2026-08-09, immediately after a completed probe.
+        #
+        # The cost is over-travel after the halt - the drip loop keeps feeding
+        # for up to drip_time before it stops - which at 0.2mm/s is ~40um more
+        # press than 0.100 gave.  It does NOT move the reported contact Z, which
+        # comes from the anchored trigger time rather than from where the
+        # toolhead ended up, and it stays bounded by z_min.
+        drip_time = gcmd.get_float("DRIP_TIME", 0.3, minval=0.) or None
         contact_z, halted = self._make_contact_helper().run(
                 gcmd, ceiling, self.probe_distance, descend_speed, lift_speed,
-                start_speed, x0, y0)
+                start_speed, x0, y0, drip_time=drip_time)
         if contact_z is None:
             raise self.point_failure("Resonance host-driven probe: no contact"
                                    " detected (halted=%s)" % (halted,))

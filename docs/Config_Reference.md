@@ -2463,6 +2463,12 @@ excitation_frequency:
 #   moving median rather than a bare minimum, because the minimum of many noisy
 #   windows is biased low and would invent drops in air. Wider values (7, 9, 13)
 #   were replayed and only cost rescues without improving safety.
+#   (DRIP_TIME is a command parameter, not a config option: pass it to PROBE,
+#   PROBE_ACCURACY or BED_MESH_CALIBRATE to change the descent's MCU look-ahead
+#   depth. It defaults to 0.3s on every path. Deeper survives a busier host -
+#   'Timer too close' is the host failing to keep the step queue fed - at the
+#   cost of proportionally more over-travel after the halt. It does not shift
+#   the reported contact Z, which comes from the anchored trigger time.)
 #rearm_margin: 0.05
 #   Where the next descent restarts after a halt is REJECTED, as a distance
 #   (mm) ABOVE the rejected halt. It used to restart below, which skipped the
