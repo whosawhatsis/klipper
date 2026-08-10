@@ -978,6 +978,35 @@ class ResonanceProbe:
             gcmd.respond_info("Resonance probe: point (%.1f, %.1f) using"
                               " %.1f Hz" % (x, y, f))
 
+    # Single fixed-frequency amplitude measurement in place.  Kept when the
+    # auto re-tune was removed: retune was its main user, but _stepwise_probe
+    # (the legacy non-drip probe mode) depends on it too.  The deploy-time scope
+    # check caught the over-removal.
+    def _measure_response_at(self, gcmd, freq=None, duration=None,
+                             dwell=0.050, quiet=True, require=False):
+        import numpy as np
+        if freq is None:
+            freq = self.excitation_freq
+        toolhead = self.printer.lookup_object('toolhead')
+        toolhead.wait_moves()
+        toolhead.dwell(dwell)
+        aclient = self.chip.start_internal_client()
+        accel = self.accel_per_hz * freq
+        test_seq = _gen_fixed_freq(freq, accel, duration)
+        cmd = _QuietGCmd(gcmd) if quiet else gcmd
+        try:
+            self.executor.run_test(test_seq, self.vibrate_dir, cmd)
+        finally:
+            aclient.finish_measurements()
+        samples = aclient.get_samples()
+        if not samples:
+            if require:
+                raise gcmd.error("Accelerometer measured no data while probing")
+            return 0.
+        data = np.asarray(samples, dtype=np.float64)
+        t = data[:, 0] - data[0, 0]
+        return _dft_amp(t, data[:, 1 + self.output_index], freq)
+
     def _stepwise_probe(self, gcmd):
         self._check_axis_safety(gcmd)
         toolhead = self.printer.lookup_object('toolhead')
