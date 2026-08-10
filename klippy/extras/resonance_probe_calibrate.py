@@ -22,6 +22,9 @@ from .resonance_tester import (TestAxis, _parse_axis,
 # DC/drift portion of the spectrum does not win the argmax.
 MIN_PEAK_FREQ = 5.
 
+# Least press below contact that still measures a pressed state at all.
+MIN_PRESS = 0.05
+
 # gcmd wrapper that swallows respond_info (keeps get/error/etc.) so a swept test
 # does not print its per-frequency progress line - used for the multi-point mesh
 # survey, where ~35 lines/point would otherwise flood the console.
@@ -1718,11 +1721,33 @@ class ResonanceProbeCalibrate:
             raise gcmd.error("Mode select: no confirmed contact found across"
                              " any candidate after escalating through all of"
                              " them; lower the start height or floor")
-        if contact_z < z_min + down_margin:
-            raise gcmd.error("Mode select: contact z=%.4f leaves no room"
-                             " above the floor %.3f for a %.3fmm contact dwell"
-                             " (bed too low or detection failed)"
-                             % (contact_z, z_min, down_margin))
+        # CLAMP the dwell depth to the room that exists, rather than refusing.
+        #
+        # down_margin has to reach PAST the damping cliff (110-150um below
+        # contact on this machine) or the characterisation measures the flat
+        # region and reports ~0% for a mode that damps fine - the artifact that
+        # invalidated the 2026-08-09 survey.  But the configured floor bounds how
+        # deep any ramp may go, and a plate sitting near z=0 with z_min=-0.12
+        # simply has less than 0.20mm of room.  Refusing there makes the deeper
+        # default unusable on exactly the machines that need it.
+        #
+        # Use what is available, say so, and keep the hard refusal for the case
+        # where there is not even enough room to press meaningfully.
+        avail = contact_z - z_min
+        if avail < MIN_PRESS:
+            raise gcmd.error("Mode select: contact z=%.4f leaves only %.3fmm"
+                             " above the floor %.3f - not enough to press"
+                             " (minimum %.3fmm; bed too low or detection"
+                             " failed)"
+                             % (contact_z, avail, z_min, MIN_PRESS))
+        if down_margin > avail:
+            gcmd.respond_info(
+                "Mode select: clamping the contact dwell %.3f -> %.3fmm - the"
+                " floor %.3f is only that far below contact z=%.4f.  A dwell"
+                " shallower than the damping cliff under-reports the drop, so"
+                " treat marginal rankings here with suspicion."
+                % (down_margin, avail, z_min, contact_z))
+            down_margin = avail
         if ambiguous:
             gcmd.respond_info(
                 "Mode select: WARNING - no candidate ever read fully clean at"
