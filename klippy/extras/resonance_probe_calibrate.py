@@ -319,6 +319,74 @@ class ResonanceProbeCalibrate:
                 plan[pt] = untried
         return plan
 
+    # Score candidate modes from several INTERLEAVED contact-finds at one point.
+    #
+    # The strongest single reading is not the best detector: on 2026-09-12 the
+    # mode that led all three axis rankings false-halted on nearly every find,
+    # and the old ranking never saw it because it characterised modes only
+    # around one already-confirmed contact.  So every mode now finds its own
+    # contact each round, and is charged for how it got there.
+    #
+    # trials: {freq: [{'z', 'margins', 'false_halts', 'salvaged'}, ...]}, one
+    # entry per find.  z None = no confirmed contact; margins = the per-axis
+    # detector margins, strongest first.
+    #
+    # REJECTED outright (score None, with reasons):
+    #   - any missed find, any salvage, or a failed characterisation
+    #   - false_halts per find >= max_false_halts
+    #   - its own contact heights spread > spread_tol
+    #   - its bed height disagrees with the median of the OTHER modes by
+    #     > z_tol, after correcting for press depth (~0.73um/Hz: higher modes
+    #     press deeper).  Needs two other modes - with one there is no telling
+    #     which of the pair is wrong.  This is what catches a false halt that
+    #     verify let through: self-consistent, and 0.2mm off the bed.
+    # Survivors score by their WORST round's 1st+2nd axis margin, discounted
+    # by false halts per find and by height spread.
+    #
+    # Returns [(freq, score or None, [reasons])], best first, rejected last.
+    @staticmethod
+    def score_mode_trials(trials, z_tol=0.05, spread_tol=0.03,
+                          max_false_halts=1.0, press_mm_per_hz=0.00073):
+        def median(v):
+            v, n = sorted(v), len(v)
+            return v[n // 2] if n % 2 else 0.5 * (v[n // 2 - 1] + v[n // 2])
+        surface = {}
+        for f, ts in trials.items():
+            zs = [t['z'] for t in ts if t['z'] is not None]
+            if zs:
+                surface[f] = median(zs) + press_mm_per_hz * f
+        out = []
+        for f in sorted(trials):
+            ts = trials[f]
+            why = []
+            zs = [t['z'] for t in ts if t['z'] is not None]
+            if len(zs) < len(ts):
+                why.append("missed %d/%d finds" % (len(ts) - len(zs), len(ts)))
+            if any(t['salvaged'] for t in ts):
+                why.append("needed a salvage")
+            if any(t['z'] is not None and not t['margins'] for t in ts):
+                why.append("characterization failed")
+            fh = sum(t['false_halts'] for t in ts) / float(max(len(ts), 1))
+            if fh >= max_false_halts:
+                why.append("%.1f false halts per find" % fh)
+            spread = max(zs) - min(zs) if zs else 0.
+            if spread > spread_tol:
+                why.append("contact z spread %.0fum" % (spread * 1000.))
+            others = [s for g, s in surface.items() if g != f]
+            if f in surface and len(others) >= 2:
+                off = surface[f] - median(others)
+                if abs(off) > z_tol:
+                    why.append("bed height %+.0fum off the other modes'"
+                               " consensus" % (off * 1000.))
+            if why:
+                out.append((f, None, why))
+                continue
+            strength = min(t['margins'][0] + t['margins'][1] for t in ts)
+            out.append((f, strength / (1. + fh) / (1. + spread / spread_tol),
+                        []))
+        out.sort(key=lambda e: (e[1] is None, -(e[1] or 0.), e[0]))
+        return out
+
     # Pairs with a recorded miss, i.e. not worth retrying while searching for a
     # SINGLE global setting.  Callers allowing per-point settings must ignore
     # this and keep trying everything everywhere.
@@ -1266,6 +1334,7 @@ class ResonanceProbeCalibrate:
         # so a known-good FREQ is all it needs - handy for repeatable diagnostic
         # runs and when the user already knows the machine's resonance.
         freq = gcmd.get_float("FREQ", None, above=1., maxval=300.)
+        known_drop = None
         if freq is None:
             # Pick the frequency by CONTACT DAMPING across candidate modes (the
             # same high-mode-aware search RANK_FREQ/CALIBRATE_MESH use), not
@@ -1308,16 +1377,18 @@ class ResonanceProbeCalibrate:
         # Save into [resonance_probe] (applied on SAVE_CONFIG + restart).
         configfile = self.printer.lookup_object('configfile')
         floors = m['floors']
-        vals = {'accel_chip': chip.name, 'accel_axis': accel_axis,
-                'vibrate_axis': axis.get_name(),
+        # Only what the probe needs.  Not saved: accel_axis (every axis is
+        # watched live), the scalar halt_sensitivity (per-axis floors always
+        # cover all three), probe_mode (hostdriven is the default).
+        vals = {'accel_chip': chip.name,
                 'excitation_frequency': "%.1f" % freq,
                 'accel_per_hz': "%.0f" % accel_per_hz,
                 'sensitivity': "%.3f" % sensitivity,
-                'halt_sensitivity': "%.3f" % halt,
                 'halt_sensitivity_x': "%.3f" % floors[0],
                 'halt_sensitivity_y': "%.3f" % floors[1],
-                'halt_sensitivity_z': "%.3f" % floors[2],
-                'probe_mode': 'hostdriven'}
+                'halt_sensitivity_z': "%.3f" % floors[2]}
+        if axis.get_name() != 'x':
+            vals['vibrate_axis'] = axis.get_name()
         for k, v in vals.items():
             configfile.set('resonance_probe', k, v)
         gcmd.respond_info(
@@ -1476,8 +1547,9 @@ class ResonanceProbeCalibrate:
                 "Mode select: only one candidate mode found (%.1f Hz); nothing"
                 " to rank against." % (candidates[0][0],))
             return accel_axis, candidates[0][0], None, candidates[0][0]
-        best_freq, ranked, _ambiguous, _attempts = self._finder_rank_at_point(
-            gcmd, chip, accel_axis, axis, candidates)
+        best_freq, ranked, _ambiguous, _attempts = \
+            self._interleaved_rank_at_point(gcmd, chip, accel_axis, axis,
+                                            candidates)
         # Use the accelerometer axis the WINNING mode actually damps on, not the
         # axis the PSD scan happened to sweep.  These are different things: the
         # ranking measures the drop on all three axes and a cross-axis mode can
@@ -1498,17 +1570,6 @@ class ResonanceProbeCalibrate:
             accel_axis = best_axis
         return accel_axis, best_freq, ranked, candidates[0][0]
 
-    # Extracted from _find_best_probe_freq so a FIXED candidate list (resolved
-    # ONCE, e.g. at the mesh center) can be re-evaluated at other points
-    # without re-running the swept PSD scan there too - see SURVEY_MESH, which
-    # needs exactly this: the same candidates tested at every point to build a
-    # point x frequency reliability table, not a fresh candidate search per
-    # point.  Returns (best_freq, ranked, ambiguous, attempts) - 'attempts' is
-    # the total number of finder descents needed across all escalations, a
-    # reliability signal in its own right (see resonance-nozzle-probe memory:
-    # a frequency that only lands a clean reading after several retries is
-    # objectively less reliable than one that verifies clean on the first
-    # try, even if their final detectability numbers end up similar).
     # Descend REPS times through AIR ONLY (per-axis floors = 1.0 so the halt can
     # never fire; the floor 'air_floor' stays above the bed) at freq/out_idx, and
     # return (floors, ceilings): each axis's worst-case live-gradient noise
@@ -1599,16 +1660,24 @@ class ResonanceProbeCalibrate:
             return 'none', None
         return 'weak', max(trial, key=lambda e: e[1])
 
-    def _finder_rank_at_point(self, gcmd, chip, accel_axis, axis, candidates):
+    # Rank candidates at one point by CONSISTENCY across interleaved rounds (see
+    # score_mode_trials).  Every mode does its own contact-find each round, so
+    # false halts, salvages and its bed height are measured per mode, and then
+    # gets characterised around that contact.  Rounds visit modes in a rotated,
+    # alternating order so a transient (warm-up, a drifting belt, the plate
+    # settling) lands on different modes each round instead of always biasing
+    # the same one.  Returns (best_freq, ranked, ambiguous, attempts).
+    #
+    # Cost: MODE_ROUNDS x candidates descents at one XY - 12 contacts for the
+    # usual 4 modes x 3 rounds, and probing wears the plate.
+    def _interleaved_rank_at_point(self, gcmd, chip, accel_axis, axis,
+                                   candidates):
         toolhead = self.printer.lookup_object('toolhead')
         pos = toolhead.get_position()
         x0, y0, ceiling = pos[0], pos[1], pos[2]
-        # Configured accel_per_hz, not the cap - a stronger excitation shrinks
-        # the contact drop as a fraction of it (see _calibrate_contact).
         cap = gcmd.get_float("ACCEL_PER_HZ",
                              min(self.accel_per_hz, self.max_accel_per_hz),
                              above=0.)
-        # Same paper-gauge safety floor as CALIBRATE (see _calibrate_contact).
         z_min = gcmd.get_float("CONTACT_ZMIN", -0.2)
         if ceiling <= z_min:
             raise gcmd.error("Mode select: start Z %.3f is at/below the floor"
@@ -1621,184 +1690,81 @@ class ResonanceProbeCalibrate:
         min_drop = gcmd.get_float("CONTACT_MIN_DROP", 0.10, above=0., below=1.)
         target_noise = gcmd.get_float("CONTACT_TARGET_NOISE", 0.06,
                                       above=0., below=1.)
+        rounds = gcmd.get_int("MODE_ROUNDS", 3, minval=2, maxval=6)
+        z_tol = gcmd.get_float("MODE_Z_TOL", 0.05, above=0.)
+        spread_tol = gcmd.get_float("MODE_SPREAD_TOL", 0.03, above=0.)
+        max_fh = gcmd.get_float("MODE_MAX_FALSE_HALTS", 1.0, above=0.)
         lift = min(self.move_speed, 10.)
         out_idx = {'x': 0, 'y': 1, 'z': 2}[accel_axis]
-        # Overrun protection for the vibrating descent (see CALIBRATE_MESH /
-        # _mode_low_first's docstring) - the strongest candidate here can easily
-        # be a high-frequency mode, exactly as prone to the "Timer too close"
-        # shutdown as CALIBRATE_MESH's own descents.
         drip_time = gcmd.get_float("DRIP_TIME", 0.3, minval=0.) or None
-        # Escalation ORDER for the contact-find: try order[0] first (the highest
-        # mode by default; MODE_ORDER=low for lowest-first) and step through the
-        # rest until one lands a VERIFY-confirmed contact.  The old "primary mode
-        # must confirm" arbiter is gone - finder.run()'s verify already rejects
-        # shallow false halts, so once contact is confirmed the ranking alone
-        # picks the best mode (see the acceptance below).
-        high_first = gcmd.get("MODE_ORDER", "high").lower() != "low"
-        order = sorted(candidates, key=lambda c: c[0])
-        if high_first:
-            order = list(reversed(order))
-        distance = max(2.0, ceiling - z_min)
-        contact_z, ranked, ambiguous = None, None, False
-        attempts = 0
         noise_reps = gcmd.get_int("CONTACT_NOISE_REPS", 5, minval=2, maxval=10)
-        # Characterize noise close to the bed, where the cross axes actually
-        # misbehave (see _calibrate_contact).
         air_stop = gcmd.get_float("CONTACT_AIR_FLOOR", 0.15)
         air_floor = max(z_min, min(ceiling - 0.3, air_stop))
-        for finder_idx, (finder_f, _pw) in enumerate(order):
-            amp = cap / (4. * math.pi**2 * finder_f)
-            # Gate each axis by its OWN near-bed descent noise at THIS candidate
-            # frequency.  ALL axes stay armed: the finder's whole job is to find
-            # out which axis a mode damps, so disarming any of them up front
-            # would hide the very cross-axis modes worth discovering.  False
-            # halts are handled by the verify pass, not by exclusion.
-            floors, ceils = self._air_noise_floors(
-                gcmd, chip, out_idx, axis, finder_f, cap, warmup, speed,
-                x0, y0, ceiling, air_floor, noise_reps, 1.3, 0.03, 0.9,
-                drip_time)
-            gcmd.respond_info(
-                "Mode select: %.1f Hz floors x=%.0f%% y=%.0f%% z=%.0f%%"
-                " (near-bed noise x=%.0f%% y=%.0f%% z=%.0f%%)"
-                % (finder_f, floors[0] * 100., floors[1] * 100.,
-                   floors[2] * 100., ceils[0] * 100., ceils[1] * 100.,
-                   ceils[2] * 100.))
-            finder = HaltingContactProbe(
-                self.printer, chip, out_idx, axis, finder_f, cap, amp, z_min,
-                warmup, 0.06, 0.15, *self._detect_params(gcmd),
-                halt_sensitivity_axis=floors)
-            for attempt in range(3):
-                attempts += 1
-                cz, halted = finder.run(gcmd, ceiling, distance, speed, lift,
-                                        lift, x0, y0, drip_time=drip_time)
-                if cz is None:
+        distance = max(2.0, ceiling - z_min)
+        freqs = [c[0] for c in candidates]
+        floors = {}
+        trials = dict((f, []) for f in freqs)
+        rows = dict((f, []) for f in freqs)
+        for r in range(rounds):
+            k = r % len(freqs)
+            order = freqs[k:] + freqs[:k]
+            if r % 2:
+                order.reverse()
+            for f in order:
+                if f not in floors:
+                    floors[f], ceils = self._air_noise_floors(
+                        gcmd, chip, out_idx, axis, f, cap, warmup, speed,
+                        x0, y0, ceiling, air_floor, noise_reps, 1.3, 0.03,
+                        0.9, drip_time)
                     gcmd.respond_info(
-                        "Mode select: %.1f Hz found no contact (attempt %d/3,"
-                        " halted=%s)" % (finder_f, attempt + 1, halted))
-                    continue
-                trial = self._rank_modes_by_damping(
-                    gcmd, chip, accel_axis, candidates, cz, x0, y0, cap, z_min,
-                    warmup, lift, up_margin, down_margin, cycles,
-                    min_drop, target_noise)
-                verdict, pick = self._accept_ranked_contact(
-                    trial, min_drop, target_noise)
-                if verdict == 'clean':
-                    contact_z, ranked, ambiguous = cz, trial, False
-                    gcmd.respond_info(
-                        "Mode select: contact at z=%.4f confirmed (best %.1f Hz"
-                        " drop=%.0f%% margin=%.1fx)"
-                        % (cz, pick[0], pick[1] * 100., pick[3]))
-                    break
-                if verdict == 'none':
-                    # Nothing damps on any candidate at this contact - genuine
-                    # contact would show meaningful damping on at least the mode
-                    # that couples to it, so this is a false/shallow halt for
-                    # this finder frequency; escalate to the next one.
-                    gcmd.respond_info(
-                        "Mode select: %.1f Hz halts at z=%.4f but NOTHING damps"
-                        " there on any candidate - false contact; escalating"
-                        % (finder_f, cz))
-                    break
-                # 'weak': some real damping but nothing clean - keep as an
-                # unverified best-effort only if nothing better ever turns up.
-                if ranked is None or pick[1] > max(e[1] for e in ranked):
-                    contact_z, ranked, ambiguous = cz, trial, True
+                        "Mode select: %.1f Hz floors x=%.0f%% y=%.0f%% z=%.0f%%"
+                        " (near-bed noise x=%.0f%% y=%.0f%% z=%.0f%%)"
+                        % ((f,) + tuple(v * 100. for v in floors[f])
+                           + tuple(v * 100. for v in ceils)))
+                finder = HaltingContactProbe(
+                    self.printer, chip, out_idx, axis, f, cap,
+                    cap / (4. * math.pi**2 * f), z_min, warmup, 0.06, 0.15,
+                    *self._detect_params(gcmd),
+                    halt_sensitivity_axis=floors[f])
+                cz, _halted = finder.run(gcmd, ceiling, distance, speed, lift,
+                                         lift, x0, y0, drip_time=drip_time)
+                t = dict(finder.run_stats, z=cz, margins=None)
+                if cz is not None:
+                    row = self._rank_modes_by_damping(
+                        gcmd, chip, accel_axis, [(f, 0.)], cz, x0, y0, cap,
+                        z_min, warmup, lift, up_margin, down_margin, cycles,
+                        min_drop, target_noise)[0]
+                    t['margins'] = row[5] or None
+                    rows[f].append(row)
+                trials[f].append(t)
                 gcmd.respond_info(
-                    "Mode select: contact at z=%.4f shows some damping (best"
-                    " %.0f%%) but nothing clean - keeping as unverified"
-                    " best-effort, retrying for a cleaner reading"
-                    % (cz, pick[1] * 100.))
-            if ranked is not None and not ambiguous:
-                break
-            if finder_idx < len(order) - 1:
-                gcmd.respond_info(
-                    "Mode select: %.1f Hz never found a confirmed contact;"
-                    " escalating the contact-find to %.1f Hz"
-                    % (finder_f, order[finder_idx + 1][0]))
+                    "Mode select: round %d/%d %.1f Hz: z=%s false_halts=%d%s"
+                    " margins=%s"
+                    % (r + 1, rounds, f,
+                       "none" if cz is None else "%.4f" % cz,
+                       t['false_halts'], " SALVAGED" if t['salvaged'] else "",
+                       "/".join("%.1f" % m for m in t['margins'] or [])))
         toolhead.manual_move([x0, y0, ceiling], lift)
         toolhead.wait_moves()
-        if ranked is None:
-            raise gcmd.error("Mode select: no confirmed contact found across"
-                             " any candidate after escalating through all of"
-                             " them; lower the start height or floor")
-        # CLAMP the dwell depth to the room that exists, rather than refusing.
-        #
-        # down_margin has to reach PAST the damping cliff (110-150um below
-        # contact on this machine) or the characterisation measures the flat
-        # region and reports ~0% for a mode that damps fine - the artifact that
-        # invalidated the 2026-08-09 survey.  But the configured floor bounds how
-        # deep any ramp may go, and a plate sitting near z=0 with z_min=-0.12
-        # simply has less than 0.20mm of room.  Refusing there makes the deeper
-        # default unusable on exactly the machines that need it.
-        #
-        # Use what is available, say so, and keep the hard refusal for the case
-        # where there is not even enough room to press meaningfully.
-        avail = contact_z - z_min
-        if avail < MIN_PRESS:
-            raise gcmd.error("Mode select: contact z=%.4f leaves only %.3fmm"
-                             " above the floor %.3f - not enough to press"
-                             " (minimum %.3fmm; bed too low or detection"
-                             " failed)"
-                             % (contact_z, avail, z_min, MIN_PRESS))
-        if down_margin > avail:
-            gcmd.respond_info(
-                "Mode select: clamping the contact dwell %.3f -> %.3fmm - the"
-                " floor %.3f is only that far below contact z=%.4f.  A dwell"
-                " shallower than the damping cliff under-reports the drop, so"
-                " treat marginal rankings here with suspicion."
-                % (down_margin, avail, z_min, contact_z))
-            down_margin = avail
-        if ambiguous:
-            gcmd.respond_info(
-                "Mode select: WARNING - no candidate ever read fully clean at"
-                " z=%.4f; the ranking below is a best-effort, verify before"
-                " trusting it" % contact_z)
-        self._report_axis_rankings(gcmd, ranked)
-        return ranked[0][0], ranked, ambiguous, attempts
-
-    # Present the candidates by BEST / 2nd / 3rd axis margin rather than a
-    # single verdict.  Which trade to make is a judgement call the numbers
-    # cannot settle: the best 1st-axis mode detects hardest where it works, the
-    # best 3rd-axis mode degrades most gracefully as bed position moves the
-    # signal between axes, and the 2nd-axis ranking (what the automatic pick
-    # uses) balances them.  A candidate that tops SEVERAL of these rankings is
-    # corroborated in a way that winning one is not - so say when that happens
-    # instead of hiding it behind the automatic choice.
-    def _report_axis_rankings(self, gcmd, ranked):
-        rows = [r for r in ranked if len(r) > 5 and r[5]]
+        scored = self.score_mode_trials(trials, z_tol, spread_tol, max_fh)
         gcmd.respond_info(
-            "Mode select: ranking by 2nd-axis margin (best first):\n"
-            + "\n".join("  %.1f Hz: drop=%.0f%% noise=%.1f%% margin=%.1fx"
-                        " axis=%s" % (f, d * 100., n * 100., s, a)
-                        for (f, d, n, s, a) in [r[:5] for r in ranked]))
-        if len(rows) < 2:
-            return
-        lines, winners = [], []
-        for idx, label in ((0, "1st"), (1, "2nd"), (2, "3rd")):
-            order = sorted(rows, key=lambda r: -r[5][idx])
-            winners.append(order[0][0])
-            lines.append("  best %s-axis: %.1f Hz (%.1fx)   runner-up"
-                         " %.1f Hz (%.1fx)"
-                         % (label, order[0][0], order[0][5][idx],
-                            order[1][0], order[1][5][idx]))
-        gcmd.respond_info(
-            "Mode select: per-axis-rank leaders (a mode topping more than one"
-            " is the safer bet):\n" + "\n".join(lines)
-            + "\n  axis margins per mode (strongest first):\n"
-            + "\n".join("    %.1f Hz: %s"
-                        % (r[0], "  ".join("%.1fx" % v for v in r[5]))
-                        for r in ranked if len(r) > 5 and r[5]))
-        if len(set(winners)) == 1:
-            gcmd.respond_info(
-                "Mode select: %.1f Hz leads ALL THREE axis rankings"
-                % (winners[0],))
-        elif len(set(winners)) == 2:
-            common = [w for w in set(winners) if winners.count(w) > 1][0]
-            gcmd.respond_info(
-                "Mode select: %.1f Hz leads two of the three axis rankings;"
-                " %s also leads one - consider it if you want that trade"
-                % (common, ", ".join("%.1f Hz" % w for w in set(winners)
-                                     if w != common)))
+            "Mode select: consistency scores over %d interleaved rounds (best"
+            " first):\n%s" % (rounds, "\n".join(
+                "  %.1f Hz: %s" % (f, "score %.1f" % s if s is not None
+                                   else "REJECTED - " + "; ".join(why))
+                for f, s, why in scored)))
+        # One representative characterisation per surviving mode - its median
+        # margin round - in _rank_modes_by_damping's row shape, for callers.
+        ranked = []
+        for f, s, _why in scored:
+            if s is not None:
+                rs = sorted(rows[f], key=lambda row: row[3])
+                ranked.append(rs[len(rs) // 2])
+        if not ranked:
+            raise gcmd.error("Mode select: every candidate was rejected (see"
+                             " the scores above) - no mode detects consistently"
+                             " at this point")
+        return ranked[0][0], ranked, False, rounds * len(freqs)
 
     # Walk every printer object's status and report anything json.dumps would
     # refuse.  This exists because a single numpy value reaching Klipper's
@@ -1997,9 +1963,8 @@ class ResonanceProbeCalibrate:
         toolhead.manual_move([cx, cy, mesh_z], self.move_speed)
         toolhead.wait_moves()
         # ONE candidate-finding sweep, at the center - shared across every
-        # point below (see _finder_rank_at_point's docstring for why: this is
-        # what makes the full point x frequency table affordable instead of
-        # re-running a swept PSD scan at every single point too).
+        # point below, so the point x frequency table compares the same modes
+        # everywhere and no swept PSD scan is re-run per point.
         accel_axis, candidates = self._resolve_candidates(gcmd, chip, axis)
         if len(candidates) < 2:
             gcmd.respond_info(
@@ -2024,22 +1989,21 @@ class ResonanceProbeCalibrate:
             toolhead.manual_move([x, y, mesh_z], self.move_speed)
             toolhead.wait_moves()
             try:
-                _best, ranked, ambiguous, attempts = self._finder_rank_at_point(
-                    gcmd, chip, accel_axis, axis, candidates)
+                _best, ranked, _ambiguous, attempts = \
+                    self._interleaved_rank_at_point(gcmd, chip, accel_axis,
+                                                    axis, candidates)
             except gcmd.error as e:
                 gcmd.respond_info("  point (%.1f, %.1f): FAILED - %s"
                                   % (x, y, str(e)))
                 table[(x, y)] = None
                 ambiguous_points.append((x, y))
                 continue
+            # Only modes that survived the consistency scoring are listed; the
+            # rejected ones and their reasons are in the score table above.
             table[(x, y)] = {r[0]: tuple(r[1:5]) for r in ranked}
-            if ambiguous:
-                ambiguous_points.append((x, y))
             gcmd.respond_info(
-                "  point (%.1f, %.1f) [%d finder attempt(s)]%s:\n"
-                % (x, y, attempts,
-                   " [AMBIGUOUS - no candidate read fully clean]"
-                   if ambiguous else "")
+                "  point (%.1f, %.1f) [%d finds], consistent modes:\n"
+                % (x, y, attempts)
                 + "\n".join(
                     "    %.1f Hz: drop=%.0f%% noise=%.1f%%"
                     " margin=%.1fx axis=%s"

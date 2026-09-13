@@ -6,8 +6,8 @@
 # recomputed each window) - no MCU/firmware changes are required.
 #
 # Probe modes (probe_mode): "stepwise" descends in increments and detects while
-# stationary (safe, desync-proof, resolution = probe_step); "hostdriven" vibrates
-# while descending and a host task
+# stationary (safe, desync-proof, resolution = probe_step); "hostdriven" (the
+# default) vibrates while descending and a host task
 # halts the drip move on contact (loose threshold), then post-halt analysis
 # finds the precise contact Z.
 #
@@ -53,6 +53,18 @@ SEG_BUDGET = 2000
 def _cap_reps_for_budget(reps, per_rep, warm_segs, budget):
     """Largest rep count fitting the segment budget (at least 1)."""
     return max(1, min(reps, (budget - warm_segs) // max(per_rep, 1)))
+
+
+def _sweep_segments(f, z_travel, ramp_speed, dwell_t, warmup):
+    """characterize_amplitude's segment counts: (warm, air dwell, contact
+    dwell, ramp).  One segment per lateral half-cycle, dwells included - the
+    guard that counted ramps alone let a 5-level sweep reach ~3600."""
+    half_dt = 0.5 / f
+    ramp_t = max(z_travel / max(ramp_speed, 1e-3), 2. * half_dt)
+    return (max(4, int(round(warmup / half_dt))),
+            max(4, int(round(dwell_t / half_dt))),
+            max(3, int(round(max(0.2, 0.55 * dwell_t) / half_dt))),
+            max(2, int(round(ramp_t / half_dt))))
 
 
 def _contact_levels(wamps, wtag, wz, mask, min_windows, ramp_min):
@@ -484,8 +496,11 @@ class ResonanceProbe:
         # Which accelerometer (output) axis to monitor; the streamed samples
         # already have the chip's axes_map applied, so this indexes them
         # directly.
+        # Optional: every live check watches all three axes.  This only picks the
+        # channel for the paths that have no trigger axis to go on (stepwise,
+        # static verify, an un-halted refine); z is the quietest here.
         accel_axis = config.getchoice('accel_axis',
-                                      {n: n for n in AXIS_INDEX})
+                                      {n: n for n in AXIS_INDEX}, 'z')
         self.output_index = AXIS_INDEX[accel_axis]
         # Excitation parameters (deliberately small - contact is made by hand
         # in the test and amplitude scales with accel_per_hz)
@@ -714,7 +729,7 @@ class ResonanceProbe:
         #               contact Z.  No MCU trigger.
         self.probe_mode = config.getchoice(
                 'probe_mode', {'stepwise': 'stepwise',
-                               'hostdriven': 'hostdriven'}, 'stepwise')
+                               'hostdriven': 'hostdriven'}, 'hostdriven')
         self.probe_step = config.getfloat('probe_step', 0.05, above=0.)
         self.detect_time = config.getfloat('detect_time', 0.3, above=0.05)
         # The Z descent rate while vibrating.  By default this is the standard
@@ -2490,6 +2505,10 @@ class HaltingContactProbe:
         if y0 is None:
             y0 = cur[1]
         z_floor = max(self.z_min, ceiling - probe_distance)
+        # What this call went through, for calibration's mode scoring: a mode
+        # that only reaches contact via rejections or a salvage is not one to
+        # ship, however strong its eventual reading.
+        self.run_stats = {'false_halts': 0, 'salvaged': False}
         if not gcmd.get_int("VERIFY", 1):
             return self._descend_once(gcmd, ceiling, probe_distance,
                                       descend_speed, lift_speed, start_speed,
@@ -2538,6 +2557,7 @@ class HaltingContactProbe:
                                               lift_speed, thresh)
                 if z_sal is None:
                     return contact_z, halted
+                self.run_stats['salvaged'] = True
                 # Salvage runs ONLY because the halt was already missed, so its
                 # result is the LAST one that should escape verification - and
                 # structurally it was the only one that did: this branch used to
@@ -2613,6 +2633,7 @@ class HaltingContactProbe:
                 toolhead.wait_moves()
                 return final_z, True
             self._tag_verify_outcome('rejected', drop, thresh, step_snr)
+            self.run_stats['false_halts'] += 1
             if submerged:
                 # The ramp never reached air, so this candidate is UNDER the
                 # surface.  There is nothing to find below it and descending
@@ -3613,24 +3634,30 @@ class HaltingContactProbe:
         # Reps are the right thing to give up: fewer ramps means noisier
         # per-level statistics, which degrades the result, where an overrun
         # destroys the whole run.
-        MAX_SEGS_PER_LEVEL = 500
-        ramp_t_est = max(z_travel / max(ramp_speed, 1e-3), 2. * half_dt)
-        segs_per_ramp = max(2, int(round(ramp_t_est / half_dt)))
-        max_reps = max(1, MAX_SEGS_PER_LEVEL // (2 * segs_per_ramp))
-        reps = cycles_per_level
-        if reps > max_reps:
+        #
+        # The whole sweep is ONE continuous sequence, so the budget is for all
+        # of it - dwells and every level included.  A per-level ramp-only cap
+        # (500) let CONTACT_LEVELS=5 over the 0.40mm span reach ~3600 segments
+        # at 172.9Hz, and that shut the MCU down straight after the mode sweep
+        # (2026-09-12).  Levels go first: each halves the amplitude, and the
+        # low end is where the margin always loses anyway.
+        warm_segs, air_dwell_segs, contact_dwell_segs, ramp_segs = \
+            _sweep_segments(f, z_travel, ramp_speed, dwell_t, self.warmup)
+        per_rep = 2 * ramp_segs + contact_dwell_segs + air_dwell_segs
+        reps = _cap_reps_for_budget(cycles_per_level, per_rep,
+                                    warm_segs + air_dwell_segs, SEG_BUDGET)
+        per_level = air_dwell_segs + reps * per_rep
+        levels_fit = _cap_reps_for_budget(n_levels, per_level, warm_segs,
+                                          SEG_BUDGET)
+        if (reps, levels_fit) != (cycles_per_level, n_levels):
             gcmd.respond_info(
-                "Calibrate: capping CONTACT_CYCLES %d -> %d at %.1fHz (%d"
-                " segments/ramp x2 would exceed the %d-segment budget and risk"
-                " an MCU 'Timer too close' shutdown)"
-                % (reps, max_reps, f, segs_per_ramp, MAX_SEGS_PER_LEVEL))
-            reps = max_reps
-        ramp_t = max(z_travel / max(ramp_speed, 1e-3), 2. * half_dt)
-        air_dwell_segs = max(4, int(round(dwell_t / half_dt)))
-        contact_dwell_segs = max(3, int(round(max(0.2, 0.55 * dwell_t)
-                                              / half_dt)))
-        ramp_segs = max(2, int(round(ramp_t / half_dt)))
-        warm_segs = max(4, int(round(self.warmup / half_dt)))
+                "Calibrate: capping the amplitude sweep at %.1fHz to %d level(s)"
+                " x %d rep(s) (asked %d x %d) - %d segments/level would exceed"
+                " the %d-segment budget and risk an MCU 'Timer too close'"
+                " shutdown"
+                % (f, levels_fit, reps, n_levels, cycles_per_level, per_level,
+                   SEG_BUDGET))
+        n_levels = levels_fit
         start_aph = self.accel_per_hz           # the starting (cap) amplitude
         levels = [start_aph / (2. ** i) for i in range(n_levels)]
         segs = []
