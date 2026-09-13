@@ -421,9 +421,21 @@ class ResonanceProbeCalibrate:
             raise gcmd.error("'%s' is not a known accelerometer" % (chip_name,))
         return chip
 
-    def _move_to_point(self, gcmd):
+    # descends=True for commands that plan vibrating descents from the start
+    # height: without POINT they drop (not vibrating) to START_Z at the current
+    # XY first.  Planning from wherever the nozzle sat meant a 60mm vibrating
+    # descent, ~77,000 segments built up front, and an MCU "Timer too close"
+    # right after the mode scan (2026-09-13, three runs).
+    def _move_to_point(self, gcmd, descends=False):
+        toolhead = self.printer.lookup_object('toolhead')
         point = gcmd.get("POINT", None)
         if point is None:
+            if descends:
+                x, y = toolhead.get_position()[:2]
+                toolhead.manual_move([x, y, gcmd.get_float("START_Z", 2.0,
+                                                           above=0.)],
+                                     self.move_speed)
+                toolhead.wait_moves()
             return
         coords = point.split(',')
         if len(coords) != 3:
@@ -432,7 +444,6 @@ class ResonanceProbeCalibrate:
             coords = [float(c.strip()) for c in coords]
         except ValueError:
             raise gcmd.error("POINT must be 'x,y,z' of floats")
-        toolhead = self.printer.lookup_object('toolhead')
         toolhead.manual_move(coords, self.move_speed)
         toolhead.wait_moves()
 
@@ -1328,7 +1339,7 @@ class ResonanceProbeCalibrate:
         chip = self._lookup_chip(gcmd)
         axis = _parse_axis(gcmd, gcmd.get("AXIS", "x").lower())
         self._check_axis_safety(gcmd, axis)
-        self._move_to_point(gcmd)
+        self._move_to_point(gcmd, descends=True)
         # FREQ= fast path: skip the mode search entirely.  The contact phase
         # drives its first descent at the starting (cap) amplitude regardless,
         # so a known-good FREQ is all it needs - handy for repeatable diagnostic
@@ -1411,7 +1422,7 @@ class ResonanceProbeCalibrate:
         chip = self._lookup_chip(gcmd)
         axis = _parse_axis(gcmd, gcmd.get("AXIS", "x").lower())
         self._check_axis_safety(gcmd, axis)
-        self._move_to_point(gcmd)
+        self._move_to_point(gcmd, descends=True)
         freq = gcmd.get_float("FREQ", None, above=1., maxval=300.)
         if freq is None:
             # No frequency given: locate the resonance (and the responding axis)
@@ -1859,7 +1870,7 @@ class ResonanceProbeCalibrate:
         chip = self._lookup_chip(gcmd)
         axis = _parse_axis(gcmd, gcmd.get("AXIS", "x").lower())
         self._check_axis_safety(gcmd, axis)
-        self._move_to_point(gcmd)
+        self._move_to_point(gcmd, descends=True)
         freq = gcmd.get_float("FREQ", None, above=1., maxval=300.)
         if freq is None:
             accel_axis, freq = self._find_resonance(gcmd, chip, axis)
@@ -1915,7 +1926,7 @@ class ResonanceProbeCalibrate:
         chip = self._lookup_chip(gcmd)
         axis = _parse_axis(gcmd, gcmd.get("AXIS", "x").lower())
         self._check_axis_safety(gcmd, axis)
-        self._move_to_point(gcmd)
+        self._move_to_point(gcmd, descends=True)
         # SCAN_ONLY: report the mode landscape (air-only sweep) and stop, with no
         # contact - for surveying how the resonance frequency varies across the
         # bed without touching the platform at every point.

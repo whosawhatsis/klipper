@@ -67,18 +67,19 @@ def _sweep_segments(f, z_travel, ramp_speed, dwell_t, warmup):
             max(2, int(round(ramp_t / half_dt))))
 
 
-# Tallest vibrating descent when the caller gives no vib_span.  Everything above
-# it is covered by the fast non-vibrating approach.  _gen_descend_segments
-# builds the whole vibration up front, so an unbounded span from a high start
-# (Z=60, 2026-09-13) was ~77,000 segments, 12s of pegged host CPU and an MCU
-# "Timer too close".  3mm still covers the bed's height variation.
+# Tallest vibrating descent allowed when the caller gives no vib_span.
+# _gen_descend_segments builds the whole vibration up front, so a descent
+# planned from a high start (Z=60, 2026-09-13) was ~77,000 segments, 12s of
+# pegged host CPU and an MCU "Timer too close".  Callers move to a sane start
+# height first; this only turns a missed move into an error, not a shutdown.
 MAX_VIB_SPAN = 3.0
 
 
 def _vib_top(ceiling, z_floor, vib_span):
-    """Height where a descent starts vibrating."""
-    span = MAX_VIB_SPAN if vib_span is None else vib_span
-    return min(ceiling, z_floor + span)
+    """Height where a descent starts vibrating, or None if it is too tall."""
+    if vib_span is not None:
+        return min(ceiling, z_floor + vib_span)
+    return ceiling if ceiling - z_floor <= MAX_VIB_SPAN + 1e-9 else None
 
 
 def _contact_levels(wamps, wtag, wz, mask, min_windows, ramp_min):
@@ -3313,10 +3314,17 @@ class HaltingContactProbe:
         # where contact actually is, and cover the clearance above that with the
         # fast, deeply-buffered, NON-vibrating approach move that already runs
         # here.  vib_span MUST exceed the bed's height variation so the fast
-        # approach always stops safely above the surface; vib_span=None caps it at
-        # MAX_VIB_SPAN.  Once a contact_z is known for the point, 'ceiling' is
-        # already tightened below this, so z_start follows it.
+        # approach always stops safely above the surface; vib_span=None vibrates
+        # the whole descent, refused above MAX_VIB_SPAN.  Once a contact_z is
+        # known for the point, 'ceiling' is already tightened below this, so
+        # z_start follows it.
         z_vib_top = _vib_top(ceiling, z_floor, vib_span)
+        if z_vib_top is None:
+            raise gcmd.error(
+                "Resonance probe: refusing a %.2fmm vibrating descent from"
+                " z=%.3f (max %.1fmm) - move to a start height near the bed"
+                " first (POINT=x,y,2 or START_Z)"
+                % (ceiling - z_floor, ceiling, MAX_VIB_SPAN))
         z_start = z_vib_top + runway
         toolhead.manual_move([x0, y0, z_start], start_speed)
         toolhead.wait_moves()
