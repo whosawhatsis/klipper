@@ -82,6 +82,48 @@ def _vib_top(ceiling, z_floor, vib_span):
     return ceiling if ceiling - z_floor <= MAX_VIB_SPAN + 1e-9 else None
 
 
+def _arm_gate(armed_at, tc, z, arm_z, fallback_t):
+    """Arming time once detection may run, else None.
+
+    Arms when the ACTUAL Z at window time tc reaches arm_z, not at a fixed time
+    after t0: motion starts well after t0, and the time gate armed ring-up
+    false halts ABOVE the arm height (z 2.03-2.065 armed "at" 2.0, 2026-09-13).
+    Latches once armed.  Falls back to the time gate only when Z is unknown."""
+    if armed_at is not None:
+        return armed_at
+    if z is None or arm_z is None:
+        return tc if tc >= fallback_t else None
+    return tc if z <= arm_z + 1e-9 else None
+
+
+def _stepper_z(steppers, print_time):
+    """Z from step history at print_time, averaged over the Z steppers, or
+    None when there are none or the history cannot be read."""
+    try:
+        zs = [s.mcu_to_commanded_position(s.get_past_mcu_position(print_time))
+              for s in steppers]
+    except Exception:
+        return None
+    return sum(zs) / len(zs) if zs else None
+
+
+# How far back step history is trusted.  Klipper expires it after 30s
+# (motion_queuing.MOVE_HISTORY_EXPIRE), and for an older clock
+# stepcompress_find_past_position silently returns the oldest entry's start
+# position rather than failing - so stay clear of that edge.
+STEP_HISTORY_TRUST = 25.
+
+
+def _window_z(twin, zextrap, zfn, oldest_t):
+    """Per-window Z: zfn(t) (actual Z from step history) where it answers and
+    t is newer than oldest_t, else the time-extrapolated zextrap value."""
+    out = []
+    for t, ze in zip(twin, zextrap):
+        z = zfn(t) if t >= oldest_t else None
+        out.append(ze if z is None else z)
+    return out
+
+
 def _contact_levels(wamps, wtag, wz, mask, min_windows, ramp_min):
     """Per-axis (air_level, contact_level, drop) from tagged ramp windows.
 
@@ -1227,7 +1269,7 @@ class _HostResonanceEndstop:
     # hardware validation before trusting it unattended on a new axis/mode.
     AXIS_COUNT = N_AXES
 
-    def __init__(self, rprobe, steppers, t0):
+    def __init__(self, rprobe, steppers, t0, arm_z=None):
         import numpy as np
         self._np = np
         self.rprobe = rprobe
@@ -1235,7 +1277,13 @@ class _HostResonanceEndstop:
         self.reactor = self.printer.get_reactor()
         self._steppers = steppers
         self._t0 = t0
-        self._armed_time = t0 + rprobe.warmup
+        # Detection arms when actual Z crosses arm_z (see _arm_gate).  The old
+        # t0 + warmup is only the fallback when step history is unavailable,
+        # and the provisional value until arming happens.
+        self._arm_z = arm_z
+        self._arm_fallback = t0 + rprobe.warmup
+        self._armed = False
+        self._armed_time = self._arm_fallback
         self._completion = None
         self._done = False
         self._trigger_time = 0.
@@ -1538,8 +1586,13 @@ class _HostResonanceEndstop:
             seg = self._buf[self._last_analyzed - self._win_n:
                             self._last_analyzed]
             tc = seg[len(seg) // 2][0]
-            if tc < self._armed_time:
-                continue  # excitation still ringing up
+            if not self._armed:
+                z = (_stepper_z(self._steppers, tc)
+                     if self._arm_z is not None else None)
+                at = _arm_gate(None, tc, z, self._arm_z, self._arm_fallback)
+                if at is None:
+                    continue  # above the arm height: still ringing up
+                self._armed, self._armed_time = True, at
             # One array per window covering all 3 axes (not 4 separate
             # np.array() conversions) - cheaper per-window overhead, which
             # matters now that every window scores 3 axes instead of 1.
@@ -3164,7 +3217,17 @@ class HaltingContactProbe:
         # the true contact (window-leading-edge effect), more so at higher speed.
         win_z = (win_n / sps) * self._descend_speed
         amps, zwin, twin = _window_amps(times, col, f, win_n, step_n, zpos)
-        # Consider only windows after the warmup gate (skips the startup dwell).
+        # Place each window at the Z the steppers actually reached at its
+        # centre, not at halt_z + speed * dt: that extrapolation assumed
+        # commanded speed and no lag, the assumption that broke time-based
+        # arming.  zpos remains only as the per-window fallback.
+        steppers = self._get_z_steppers()
+        oldest_t = (self.printer.lookup_object('toolhead').get_last_move_time()
+                    - STEP_HISTORY_TRUST)
+        zwin = np.asarray(_window_z(twin, zwin,
+                                    lambda t: _stepper_z(steppers, t),
+                                    oldest_t), dtype=np.float64)
+        # Consider only windows after arming (see _arm_gate).
         armed_k = [k for k in range(len(amps)) if twin[k] >= armed_time]
         # Air level on EVERY channel, for the weak-excitation guard.  It must not
         # be read off the triggering axis: the axes sit at very different
@@ -3374,7 +3437,8 @@ class HaltingContactProbe:
             ishaper.disable_shaping()
         toolhead.wait_moves()
         t0 = toolhead.get_last_move_time()
-        endstop = _HostResonanceEndstop(self, self._get_z_steppers(), t0)
+        endstop = _HostResonanceEndstop(self, self._get_z_steppers(), t0,
+                                        arm_z=z_vib_top)
         gen = lambda newpos, speed: self._gen_descend_segments(newpos[2])
         vth = _VibratingToolhead(toolhead, gen, drip_time=drip_time)
         hmove = HomingMove(self.printer, [(endstop, "resonance_probe")],
@@ -3466,6 +3530,10 @@ class HaltingContactProbe:
         trig_t = endstop.get_trigger_time()
         if halted:
             anchor_t, anchor_z = trig_t, epos[2]
+        elif endstop._armed and endstop._arm_z is not None:
+            # Arming is where actual Z crossed arm_z, so that pair is a true
+            # (time, Z) point; (t0, z_start) assumed motion began at t0.
+            anchor_t, anchor_z = endstop._armed_time, endstop._arm_z
         else:
             anchor_t, anchor_z = t0, z_start
         # Refine using whichever axis actually triggered the live halt (may be
@@ -3482,7 +3550,7 @@ class HaltingContactProbe:
             _dbg(gcmd,"Resonance probe: live halt triggered on axis=%s"
                               % 'xyz'[trig_axis])
         contact_z = self._analyze_drip(gcmd, samples, anchor_t, anchor_z,
-                                       z_floor, t0 + self.warmup,
+                                       z_floor, endstop._armed_time,
                                        anchored=halted, trigger_axis=trig_axis)
         if contact_z is None:
             if halted:
