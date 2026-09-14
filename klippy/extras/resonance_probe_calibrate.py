@@ -332,21 +332,30 @@ class ResonanceProbeCalibrate:
     # detector margins, strongest first.
     #
     # REJECTED outright (score None, with reasons):
-    #   - any missed find, any salvage, or a failed characterisation
-    #   - false_halts per find >= max_false_halts
-    #   - its own contact heights spread > spread_tol
-    #   - its bed height disagrees with the median of the OTHER modes by
-    #     > z_tol, after correcting for press depth (~0.73um/Hz: higher modes
-    #     press deeper).  Needs two other modes - with one there is no telling
-    #     which of the pair is wrong.  This is what catches a false halt that
-    #     verify let through: self-consistent, and 0.2mm off the bed.
-    # Survivors score by their WORST round's 1st+2nd axis margin, discounted
-    # by false halts per find and by height spread.
+    #   - any missed find, or a failed characterisation
+    #   - its own contact heights spread > max_spread
+    #   - its median bed height disagrees with the median of the OTHER modes'
+    #     medians by > z_tol.  Needs two other modes - with one there is no
+    #     telling which of the pair is wrong.  This is what catches a false halt
+    #     that verify let through: self-consistent, and 0.2mm off the bed.
+    #
+    # Heights compare RAW.  A 0.73um/Hz press-depth correction (higher modes
+    # press deeper) was applied here until 2026-09-13; both days' hardware runs
+    # showed higher modes reading HIGHER, and at (40,40) it rejected the only
+    # clean mode (207.4 Hz, 6um spread) as "+50um off consensus" when raw it
+    # sat 1.8um from the others.
+    #
+    # Survivors score by their WORST round's 1st+2nd axis margin, then pay for
+    # how they got there (user decision, 2026-09-13):
+    #   x fh_factor per false halt   - mostly ring-up halts near the descent
+    #                                  start; costly, but not disqualifying
+    #   x salvage_factor per salvage - the halt was MISSED: a bigger penalty
+    #   / (1 + spread / spread_tol)  - height scatter below the hard ceiling
     #
     # Returns [(freq, score or None, [reasons])], best first, rejected last.
     @staticmethod
-    def score_mode_trials(trials, z_tol=0.05, spread_tol=0.03,
-                          max_false_halts=1.0, press_mm_per_hz=0.00073):
+    def score_mode_trials(trials, z_tol=0.05, spread_tol=0.03, max_spread=0.10,
+                          fh_factor=0.8, salvage_factor=0.5):
         def median(v):
             v, n = sorted(v), len(v)
             return v[n // 2] if n % 2 else 0.5 * (v[n // 2 - 1] + v[n // 2])
@@ -354,7 +363,7 @@ class ResonanceProbeCalibrate:
         for f, ts in trials.items():
             zs = [t['z'] for t in ts if t['z'] is not None]
             if zs:
-                surface[f] = median(zs) + press_mm_per_hz * f
+                surface[f] = median(zs)
         out = []
         for f in sorted(trials):
             ts = trials[f]
@@ -362,15 +371,10 @@ class ResonanceProbeCalibrate:
             zs = [t['z'] for t in ts if t['z'] is not None]
             if len(zs) < len(ts):
                 why.append("missed %d/%d finds" % (len(ts) - len(zs), len(ts)))
-            if any(t['salvaged'] for t in ts):
-                why.append("needed a salvage")
             if any(t['z'] is not None and not t['margins'] for t in ts):
                 why.append("characterization failed")
-            fh = sum(t['false_halts'] for t in ts) / float(max(len(ts), 1))
-            if fh >= max_false_halts:
-                why.append("%.1f false halts per find" % fh)
             spread = max(zs) - min(zs) if zs else 0.
-            if spread > spread_tol:
+            if spread > max_spread:
                 why.append("contact z spread %.0fum" % (spread * 1000.))
             others = [s for g, s in surface.items() if g != f]
             if f in surface and len(others) >= 2:
@@ -382,8 +386,11 @@ class ResonanceProbeCalibrate:
                 out.append((f, None, why))
                 continue
             strength = min(t['margins'][0] + t['margins'][1] for t in ts)
-            out.append((f, strength / (1. + fh) / (1. + spread / spread_tol),
-                        []))
+            n_fh = sum(t['false_halts'] for t in ts)
+            n_sal = sum(1 for t in ts if t['salvaged'])
+            out.append((f, strength * fh_factor ** n_fh
+                        * salvage_factor ** n_sal
+                        / (1. + spread / spread_tol), []))
         out.sort(key=lambda e: (e[1] is None, -(e[1] or 0.), e[0]))
         return out
 
@@ -1704,7 +1711,11 @@ class ResonanceProbeCalibrate:
         rounds = gcmd.get_int("MODE_ROUNDS", 3, minval=2, maxval=6)
         z_tol = gcmd.get_float("MODE_Z_TOL", 0.05, above=0.)
         spread_tol = gcmd.get_float("MODE_SPREAD_TOL", 0.03, above=0.)
-        max_fh = gcmd.get_float("MODE_MAX_FALSE_HALTS", 1.0, above=0.)
+        max_spread = gcmd.get_float("MODE_MAX_SPREAD", 0.10, above=0.)
+        fh_factor = gcmd.get_float("MODE_FALSE_HALT_FACTOR", 0.8,
+                                   minval=0., maxval=1.)
+        salvage_factor = gcmd.get_float("MODE_SALVAGE_FACTOR", 0.5,
+                                        minval=0., maxval=1.)
         lift = min(self.move_speed, 10.)
         out_idx = {'x': 0, 'y': 1, 'z': 2}[accel_axis]
         drip_time = gcmd.get_float("DRIP_TIME", 0.3, minval=0.) or None
@@ -1757,7 +1768,8 @@ class ResonanceProbeCalibrate:
                        "/".join("%.1f" % m for m in t['margins'] or [])))
         toolhead.manual_move([x0, y0, ceiling], lift)
         toolhead.wait_moves()
-        scored = self.score_mode_trials(trials, z_tol, spread_tol, max_fh)
+        scored = self.score_mode_trials(trials, z_tol, spread_tol, max_spread,
+                                        fh_factor, salvage_factor)
         gcmd.respond_info(
             "Mode select: consistency scores over %d interleaved rounds (best"
             " first):\n%s" % (rounds, "\n".join(
