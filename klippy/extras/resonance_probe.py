@@ -606,6 +606,15 @@ class ResonanceProbe:
         # lookback costs nothing in detection.
         self.drawdown_lookback = config.getfloat('drawdown_lookback', 0.06,
                                                  above=0.)
+        # The GRADIENT test (fixed per-axis halt_sensitivity floors) no longer
+        # halts by default.  Corpus, 2026-09-15: 92% of its paired halts were
+        # false and 11 of 12 in-air confirmations followed one - it fires ~1.2mm
+        # above the bed on a near-dead channel whose noise crosses a fixed
+        # floor.  Derivative + drawdown alone found 16/16 labelled contacts with
+        # no early fires and cut pure-air false alarms 37% -> 16%, at the cost
+        # of halting ~55um deeper.  The floors still arm/disarm axes and set the
+        # derivative floors.
+        self.halt_gradient = config.getboolean('halt_gradient', False)
         # Verify/refine sampling.  Each rep is one down ramp plus one up ramp
         # through the candidate contact, and each ramp now yields its OWN
         # estimate, so reps buy independent datapoints (and a measurable
@@ -1331,7 +1340,9 @@ class _HostResonanceEndstop:
         self._prev_amp = [None] * self.AXIS_COUNT
         self._deriv_run = [0] * self.AXIS_COUNT
         self._dbg_minstep = [0.] * self.AXIS_COUNT
-        self._trigger_kind = 'gradient'
+        # None until a test fires - an un-halted descent used to be labelled
+        # 'gradient' in its trace header, which polluted corpus counts.
+        self._trigger_kind = None
         self._dbg_win_z = 0.   # Z span one DFT window averages over (see below)
         # Window sized lazily from the measured sample rate (first batches).
         # The window is a fixed time; the step is a fixed Z distance (so the
@@ -1425,6 +1436,10 @@ class _HostResonanceEndstop:
         self._dd_air = [[] for _ in range(self.AXIS_COUNT)]
         self._dd_thresh = [None] * self.AXIS_COUNT
         self._dd_warm = 40      # air windows used for the noise estimate
+        # Read from the registered probe object: rprobe is a per-descent helper.
+        # See ResonanceProbe.halt_gradient.
+        cfg = self.printer.lookup_object('resonance_probe', None)
+        self._grad_enabled = bool(getattr(cfg, 'halt_gradient', False))
 
     def get_steppers(self):
         return self._steppers
@@ -1738,7 +1753,7 @@ class _HostResonanceEndstop:
                             return False
                     else:
                         self._deriv_run[a_idx] = 0
-                if drop >= self._halt_axis[a_idx]:
+                if self._grad_enabled and drop >= self._halt_axis[a_idx]:
                     if self._below_run[a_idx] == 0:
                         # Anchor the trigger to the reference time (~confirm_z
                         # above) = the contact onset, not the deeper confirming
@@ -1750,6 +1765,7 @@ class _HostResonanceEndstop:
                     if self._below_run[a_idx] >= self._grad_persist:
                         self._trigger_time = float(self._first_below_t[a_idx])
                         self._trigger_axis = a_idx
+                        self._trigger_kind = 'gradient'
                         self._done = True
                         self._completion.complete(True)
                         return False
@@ -3633,6 +3649,7 @@ class HaltingContactProbe:
                                      for v in endstop._dd_thresh),))
                 fh.write("# trigger_kind=%s trigger_axis=%s\n"
                          % (endstop._trigger_kind, endstop._trigger_axis))
+                fh.write("# halt_gradient=%d\n" % (int(endstop._grad_enabled),))
                 note = getattr(rp, 'trace_note', None)
                 if note:
                     # The replay loaders parse header lines by splitting on
