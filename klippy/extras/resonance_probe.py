@@ -2484,7 +2484,15 @@ class HaltingContactProbe:
         # midpoint to be crossed cleanly).
         if air_amp > contact_amp:
             mid = 0.5 * (air_amp + contact_amp)
-            for j in range(1, len(da)):
+            # Take the crossing nearest AIR in both directions.  Past the
+            # damping minimum, pressing harder re-excites the structure back
+            # toward the air level, so a ramp reaching deep crosses mid more
+            # than once.  The down ramp already starts in air; the up ramp
+            # starts at the deep end, and its first crossing was that
+            # re-excitation climb - probes 80um low, 2026-09-14.
+            idx = range(1, len(da)) if descending else \
+                range(len(da) - 1, 0, -1)
+            for j in idx:
                 prev, cur = da[j - 1], da[j]
                 if descending:
                     # falling through mid: air -> contact
