@@ -329,6 +329,59 @@ normally produced by the automatic calibration rather than entered by hand.
 
 ## Calibration
 
+### Before you calibrate: check that the belts are evenly tensioned
+
+On a CoreXY (or any kinematic where two belts share both axes), check the belt
+tension balance *before* calibrating, and again after any belt is replaced or
+re-tensioned.  Vibrate along each belt direction in turn and compare:
+
+```
+TEST_RESONANCES AXIS=1,1  OUTPUT=resonances NAME=belt_a
+TEST_RESONANCES AXIS=1,-1 OUTPUT=resonances NAME=belt_b
+```
+
+The two response curves should peak at the same frequencies.  Matching
+*frequencies* is the tension check; the peak heights may differ somewhat
+without indicating a problem.
+
+This matters more for this probe than it does for input shaping, because an
+imbalance does not merely blur the resonance - it changes which modes exist.
+Two evenly tensioned belts give a pair of belt-path modes at the *same*
+frequency, which appear as a single peak.  An imbalance lifts that degeneracy:
+the pair splits into two peaks, and once the mismatch is large enough each mode
+becomes localized on one belt rather than shared between them.  The
+consequences all land on calibration:
+
+* **Spurious candidate modes.** The mode scan reports extra peaks, and each one
+  is effectively a measurement of a single belt rather than of the toolhead.
+* **Detectability that differs per belt.** Contact detection depends on the
+  *fractional* amplitude drop, so contact damping has to compete with whatever
+  damping is already present.  A mode localized on a worn, damaged or slack belt
+  is already heavily damped, so contact adds little and the drop is small; a
+  mode on the sound belt is lightly damped, so the same contact produces a
+  large drop.  Calibration will prefer the sound belt's mode without any
+  indication that this is what it is doing.
+* **A frequency that only works where it was measured.** If the imbalance comes
+  from localized damage rather than uniform tension, the damaged section passes
+  through the pulleys at different points in the belt loop as the toolhead
+  moves, so which belt is locally lossy - and therefore which mode detects best
+  - becomes a function of bed position.  A frequency calibrated at one point can
+  then detect poorly, or not at all, elsewhere on the bed.  This is easily
+  mistaken for a bed or gantry problem.
+
+A calibration run on unbalanced belts is not obviously wrong at the point where
+it was taken, which is what makes this worth ruling out first rather than
+diagnosing later.
+
+The excitation frequency is a property of the machine's structure, so replacing
+or re-tensioning a belt invalidates it along with `accel_per_hz`,
+`sensitivity`, `halt_sensitivity` and the responsive `accel_axis`. Re-run the
+full calibration after belt work; do not carry the old values across.
+
+On Cartesian kinematics each belt drives its own axis, so the ordinary
+per-axis `TEST_RESONANCES AXIS=X` / `AXIS=Y` already separates them and no
+diagonal test is needed.
+
 ### Calibration helper module
 
 Add the calibration helper, which runs the test moves and can write the
