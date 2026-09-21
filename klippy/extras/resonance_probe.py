@@ -1859,16 +1859,7 @@ class HaltingContactProbe:
         self.verify_overshoot_tol = getattr(rp, 'verify_overshoot_tol', 0.05)
         # Per-direction detail from the last verify, for reporting.
         self._verify_detail = {}
-        # Inherit the configured descent speed like every other setting above.
-        # Hardcoding 1.0 here silently pinned every CALIBRATION command to
-        # 1.0mm/s regardless of descend_speed/speed - and 1.0 is far above the
-        # ~0.3mm/s where the contact drop washes out (26% static damping reads
-        # 9/4/2% at 0.3/0.5/0.8).  So RESONANCE_PROBE_CONTACT could never halt:
-        # replayed traces show -4% total on the excitation axis against -57..-91%
-        # on the slower salvage ramp for the same contact, and the resulting
-        # over-press is what the salvage "air" figure actually measures.
-        # 1.0 remains the fallback for helpers built with no [resonance_probe].
-        self._descend_speed = getattr(rp, '_descend_speed', 1.)
+        self._descend_speed = 1.
         self._z_steppers = None
         # Timing-corrected reversal cruise velocity, installed by run() for the
         # duration of a descent (None = use the legacy accel-limited peak_v).
