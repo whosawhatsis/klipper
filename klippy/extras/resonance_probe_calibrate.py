@@ -359,9 +359,22 @@ class ResonanceProbeCalibrate:
         def median(v):
             v, n = sorted(v), len(v)
             return v[n // 2] if n % 2 else 0.5 * (v[n // 2 - 1] + v[n // 2])
+        # A SALVAGED find MISSED its halt and over-pressed to get there, so its
+        # height is an over-press artifact rather than a bed reading, and it
+        # must not vote on where the bed is.  (The mode is still scored, and
+        # still pays salvage_factor for it, below.)
+        #
+        # This only bites at small N.  With 5+ candidates a non-detecting mode
+        # is outvoted; with 3, "others" holds 2 entries and median() of a pair
+        # is their MEAN, so one bad mode shifts the reference by half its own
+        # error.  Measured at (80,25) on 2026-09-21: 92.2Hz never detected (2%
+        # drop, 0.2x margin), salvaged every round at z~0.49-0.57, and dragged
+        # the consensus ~400um - rejecting 73.4Hz and 117.1Hz, both of which
+        # detected cleanly at ~50% drop, as "off the other modes' consensus".
         surface = {}
         for f, ts in trials.items():
-            zs = [t['z'] for t in ts if t['z'] is not None]
+            zs = [t['z'] for t in ts
+                  if t['z'] is not None and not t.get('salvaged')]
             if zs:
                 surface[f] = median(zs)
         out = []
