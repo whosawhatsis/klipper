@@ -63,7 +63,12 @@ missed by watching only the driven axis.
   this ceiling: the excitation acceleration scales with the square of the
   frequency, so the achievable displacement (and signal) falls off, and the
   faster descent that a shorter cycle would allow is given back to a weaker,
-  noisier measurement.  Keep `speed` at or below ~1 mm/s.
+  noisier measurement.  Keep `speed` at or below ~1 mm/s - and note that this
+  is the ceiling for the MOTION, not for reliable detection: the contact drop
+  starts washing out around 0.3 mm/s (26% static damping reads 9%/4%/2% at
+  0.3/0.5/0.8 mm/s).  Probing uses `[resonance_probe] descend_speed` (falling
+  back to the probe's `speed`); the calibration commands use `CONTACT_SPEED=`
+  and `RESONANCE_PROBE_CONTACT` uses `SPEED=`, which defaults to 1 mm/s.
 
 ## The part-cooling fan is disabled while probing
 
@@ -515,9 +520,28 @@ Then:
 
 The descent halts on contact, so it does not drive into the bed; the `ZMIN`
 floor (default -0.2) is only a backstop for a detection miss.
+
+**`SPEED=` defaults to 1 mm/s, which is fast enough that contact detection can
+fail entirely** - and this command does *not* read `CONTACT_SPEED=`, which
+belongs to the calibration commands (`RESONANCE_PROBE_CALIBRATE`,
+`..._CALIBRATE_MESH`, `..._ZNOISE`, default 0.1 mm/s).  Passing `CONTACT_SPEED=`
+here is silently ignored, and the descent runs at 1 mm/s regardless.
+
+1 mm/s is the *mechanical* ceiling, not the detection one.  The amplitude drop
+washes out well below it: 26% static damping was measured live as 9%/4%/2% at
+0.3/0.5/0.8 mm/s, and on the development machine a 1 mm/s descent showed -4%
+across the whole descent where a slower ramp measured -57..-91% on the same
+contact - so the halt never fired, the descent over-pressed by 0.3-0.4 mm, and
+every height came from the salvage path instead.  **Pass `SPEED=` explicitly
+whenever you use this command to characterise anything.**
+
+Every descent trace records the speed that was actually used in its header
+(`# freq=... speed=...`, plus `win_n` and `step_z`).  Checking that against
+what you passed is the fastest way to catch a parameter that was ignored.
 `RESONANCE_PROBE_CONTACT` also accepts `FREQ=` and `ACCEL_AXIS=` (to skip the
 resonance search if you already know them), `ACCEL_PER_HZ=`, `POINT=x,y,z`,
-`SENSITIVITY=`, `HALT_SENSITIVITY=`, `SPEED=` (descent speed, default 1 mm/s),
+`SENSITIVITY=`, `HALT_SENSITIVITY=`, `SPEED=` (descent speed, default 1 mm/s -
+see the warning below; set it to match `[resonance_probe] descend_speed`),
 `WARMUP=` (excitation warm-up before detection arms; defaults to the
 `[resonance_probe] warmup:` value, since arming before the oscillation has
 reached steady state leaves ring-up in the air baseline the detector
