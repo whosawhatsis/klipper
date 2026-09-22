@@ -50,6 +50,24 @@ CONTACT_DOWN_MM = 0.25    # must clear the damping cliff below contact
 SEG_BUDGET = 2000
 
 
+def _min_verify_dwell(detect_cycles, freq):
+    """Shortest VERIFY_DWELL that can yield a contact LEVEL, in seconds.
+
+    The contact level comes from windows tagged 'contact', and one window is
+    detect_cycles/freq long.  Below ~2 windows there are too few for
+    _contact_levels to form a level: it returns nothing, air_amp/contact_amp
+    come back 0.0, every contact is rejected as a false halt, and the reject
+    path then re-arms below each halt and walks the nozzle to the z_min floor.
+
+    A flat lower bound cannot express this - 0.15s is ample at 150Hz and
+    silently broken at 54.7Hz, where one window is already 146ms.  Measured the
+    expensive way on 2026-09-21: VERIFY_DWELL=0.15 at 54.7Hz pressed a cold
+    nozzle to Z=-0.5 at four bed locations for ~10 minutes and produced no
+    usable data at any of them.
+    """
+    return 2. * detect_cycles / max(freq, 1e-9)
+
+
 def _cap_reps_for_budget(reps, per_rep, warm_segs, budget):
     """Largest rep count fitting the segment budget (at least 1)."""
     return max(1, min(reps, (budget - warm_segs) // max(per_rep, 1)))
@@ -2125,7 +2143,20 @@ class HaltingContactProbe:
         if z_limit is not None:
             z_lo = max(z_lo, z_limit)
         z_travel = max(z_hi - z_lo, 1e-3)
-        dwell_t = gcmd.get_float("VERIFY_DWELL", 0.4, above=0.1)
+        # Frequency-aware floor: see _min_verify_dwell.  Raising this to an
+        # error rather than clamping is deliberate - a silently lengthened
+        # dwell changes the segment count the caller budgeted for.
+        min_dwell = _min_verify_dwell(self.detect_cycles, f)
+        dwell_t = gcmd.get_float("VERIFY_DWELL", max(0.4, min_dwell),
+                                 above=0.1)
+        if dwell_t < min_dwell:
+            raise gcmd.error(
+                "VERIFY_DWELL %.3fs is shorter than 2 analysis windows"
+                " (%.3fs) at %.1fHz with detect_cycles=%g: too few 'contact'"
+                " windows to measure a level, so every contact would be"
+                " rejected as a false halt and the nozzle would walk to the"
+                " z_min floor.  Use >=%.3f."
+                % (dwell_t, min_dwell, f, self.detect_cycles, min_dwell))
         dwell_segs = max(4, int(round(dwell_t / half_dt)))
         ramp_t = max(z_travel / ramp_speed, 2. * half_dt)
         ramp_segs = max(6, int(round(ramp_t / half_dt)))
