@@ -50,6 +50,30 @@ CONTACT_DOWN_MM = 0.25    # must clear the damping cliff below contact
 SEG_BUDGET = 2000
 
 
+_CONTACT_HEADER = ("x,y,z_reported,z_down,z_up,bias,down_spread,up_spread,"
+                   "reps,freq,trace")
+
+
+def _contact_row(x0, y0, z, detail, freq, trace_path):
+    """One contacts.csv line, naming the verify capture it came from.
+
+    The trace name is APPENDED so existing readers keep working.  Pairing rows
+    to captures by filename ORDER does not work: _autosave_verify numbers files
+    by counting them, and a rejected verify writes one too, so a probe can emit
+    more than one file.  On the 2026-09-21 sweep 12 of 25 rows paired to a
+    capture whose z_cand could not contain the row's z_down - which makes the
+    ledger useless for deciding which probes to distrust, the one question it
+    exists to answer.
+    """
+    fmt = lambda v: ('' if v is None else '%.6f' % v)
+    name = os.path.basename(trace_path) if trace_path else ''
+    return ('%.3f,%.3f,%.6f,%s,%s,%s,%s,%s,%d,%.2f,%s'
+            % (x0, y0, z, fmt(detail.get('down')), fmt(detail.get('up')),
+               fmt(detail.get('bias')), fmt(detail.get('down_spread')),
+               fmt(detail.get('up_spread')), detail.get('reps', 0), freq,
+               name))
+
+
 def _min_verify_dwell(detect_cycles, freq):
     """Shortest VERIFY_DWELL that can yield a contact LEVEL, in seconds.
 
@@ -2480,6 +2504,11 @@ class HaltingContactProbe:
             # by the caller from the drop and the threshold - so the outcome is
             # appended afterwards rather than duplicating that logic.
             self._last_verify_path = path
+            # Separate handle for the ledger.  _tag_verify_outcome clears
+            # _last_verify_path when it appends the outcome line, so reusing it
+            # here would make the ledger's trace column depend on whether the
+            # tag ran first - silently empty for some probes and not others.
+            self._last_verify_saved = path
         except (IOError, OSError) as e:
             # Diagnostics must never break probing.
             logging.warning("resonance_probe: verify trace autosave failed: %s",
@@ -3175,14 +3204,10 @@ class HaltingContactProbe:
             f = open(path, 'a')
             try:
                 if new_file:
-                    f.write('x,y,z_reported,z_down,z_up,bias,down_spread,'
-                            'up_spread,reps,freq\n')
-                fmt = lambda v: ('' if v is None else '%.6f' % v)
-                f.write('%.3f,%.3f,%.6f,%s,%s,%s,%s,%s,%d,%.2f\n'
-                        % (x0, y0, z, fmt(d.get('down')), fmt(d.get('up')),
-                           fmt(d.get('bias')), fmt(d.get('down_spread')),
-                           fmt(d.get('up_spread')), d.get('reps', 0),
-                           self.excitation_freq))
+                    f.write(_CONTACT_HEADER + '\n')
+                f.write(_contact_row(
+                    x0, y0, z, d, self.excitation_freq,
+                    getattr(self, '_last_verify_saved', None)) + '\n')
             finally:
                 f.close()
         except Exception as e:
