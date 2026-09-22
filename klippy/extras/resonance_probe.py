@@ -394,6 +394,27 @@ def _window_amps_tagged(times, cols, freq, win_n, step_n, seg_end):
     return [np.array(w) for w in wamps], np.array(wk)
 
 
+
+# Rows for a verify autosave.  The per-axis columns are APPENDED after the
+# legacy four: local/replay_pressdepth, replay_rampmin and verify_strategy_eval
+# all read 'amp' from these files, positionally in places, so substituting the
+# columns would silently break every saved-capture replay.  'amp' keeps
+# mirroring the judged axis; amp_x/y/z carry what _window_amps_tagged already
+# computed and the writer used to throw away.  The offline refinement pass
+# (change-point on a disarmed press) needs the JOINT departure: at contact z can
+# fall while y rises, so one channel cannot separate contact from an air
+# excursion.
+def _verify_rows(wz, wamps, wtag, wrep, out_idx):
+    header = "z,amp,tag,rep,amp_x,amp_y,amp_z"
+    rows = []
+    for i in range(len(wz)):
+        per = [wamps[a][i] for a in range(N_AXES)]
+        rows.append("%.5f,%.3f,%s,%d,%s"
+                    % (wz[i], per[out_idx], wtag[i], wrep[i],
+                       ",".join("%.3f" % v for v in per)))
+    return header, rows
+
+
 # Per-probe instrumentation, silent unless VERBOSE=1.
 #
 # These lines were the most valuable debugging asset in getting detection
@@ -2379,12 +2400,13 @@ class HaltingContactProbe:
         # probes instead of one hardware run per candidate - but only if the
         # per-ramp windows are kept.  The descent autosave does not cover this
         # path: it saves the drip descent, which ends at the halt.
-        self._autosave_verify(wz, wamp, wtag, wrep, air_amp, contact_amp,
-                              z_cand, reps, ramp_speed, x0, y0)
+        self._autosave_verify(wz, wamps, judge, wtag, wrep, air_amp,
+                              contact_amp, z_cand, reps, ramp_speed, x0, y0)
         return air_amp, contact_amp, refined, step_snr, submerged
 
-    def _autosave_verify(self, wz, wamp, wtag, wrep, air_amp, contact_amp,
-                         z_cand, reps, ramp_speed, x0=None, y0=None):
+    def _autosave_verify(self, wz, wamps, out_idx, wtag, wrep, air_amp,
+                         contact_amp, z_cand, reps, ramp_speed, x0=None,
+                         y0=None):
         rp = self.printer.lookup_object('resonance_probe', None)
         tdir = getattr(rp, 'trace_dir', None)
         if not tdir or not len(wz):
@@ -2419,9 +2441,10 @@ class HaltingContactProbe:
                     # remember - a mangled tag is unrecoverable without
                     # re-probing, and probing wears the plate.
                     fh.write("# note=%s\n" % ("-".join(note.split()),))
-                fh.write("z,amp,tag,rep\n")
-                for z, a, t, r in zip(wz, wamp, wtag, wrep):
-                    fh.write("%.5f,%.3f,%s,%d\n" % (z, a, t, r))
+                header, rows = _verify_rows(wz, wamps, wtag, wrep, out_idx)
+                fh.write(header + "\n")
+                for row in rows:
+                    fh.write(row + "\n")
             # The CONFIRMED/REJECTED verdict is not known here - it is decided
             # by the caller from the drop and the threshold - so the outcome is
             # appended afterwards rather than duplicating that logic.
