@@ -2389,12 +2389,18 @@ excitation_frequency:
 #   yields one independent estimate per direction, so raising this trades time
 #   for datapoints (and lets the up/down difference be measured). Each rep
 #   presses to the verification depth again.
-#verify_combine: 1
-#   1 (the default) reports the mean of the down-ramp and up-ramp contact
-#   estimates; 0 reports the down ramp alone. Averaging both is better measured
-#   (2.3um vs 2.9um pooled repeatability) and, more importantly, cancels the
-#   up/down bias, which varies with bed POSITION (+1..+20um seen) rather than
-#   being a fixed machine constant.
+#verify_combine: 0
+#   0 (the default) reports the down-ramp contact estimates alone; 1 reports
+#   the mean of the down-ramp and up-ramp estimates. The down direction was
+#   the more repeatable one at every point measured; the up/down difference
+#   is still logged as a check.
+#verify_min_step: 0.10
+#   Minimum log-amplitude step for a verification ramp to count as spanning
+#   contact. Ramps below it (e.g. under a false halt in mid air) contribute
+#   no height.
+#verify_min_snr: 10
+#   An accelerometer axis contributes to the measured contact height only if
+#   its step is at least this many times its own air noise on every rep.
 #trace_dir:
 #   If set, every descent and every verification ramp is written to this
 #   directory as CSV (amplitude per detection window). Intended for offline
