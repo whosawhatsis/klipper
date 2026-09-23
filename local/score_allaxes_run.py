@@ -35,9 +35,9 @@ for f in sorted(glob.glob(os.path.join(d, 'verify*.csv'))):
         r = [x for x in rows if x[3] == rep]
         zs = [float(x[0]) for x in r]
         ramps.append([H._vmin_edge(zs, [float(x[i]) for x in r], 0.10) for i in ai])
-    a = H._combine_axes(ramps, 10.)
+    a = H._combine_axes(ramps, 15.)
     xo = [rp[0][0] for rp in ramps if rp[0] is not None]
-    voters = [k for k in range(3) if all(rp[k] is not None and rp[k][1] / rp[k][2] >= 10. for rp in ramps)]
+    voters = [k for k in range(3) if all(rp[k] is not None and rp[k][1] / rp[k][2] > 15. for rp in ramps)]
     if name in led:
         res[key]['ledger'].append(float(led[name][2]))
         res[key]['ledger_down'].append(float(led[name][3]) if led[name][3] else np.nan)

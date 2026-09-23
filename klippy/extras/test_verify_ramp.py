@@ -284,79 +284,103 @@ def test_vmin_edge_does_not_depend_on_sample_order():
                - vmin_edge(zs, amps, 0.10)[0]) < 1e-12
 
 
-def test_combine_drops_a_noisy_axis_and_averages_the_rest():
+def test_combine_drops_a_noisy_axis_and_weights_the_rest():
     # (edge, step, noise) per axis per rep.  y has a big step but air noise
-    # like the measured accel y (step/noise ~4) - it must not vote.
+    # like the measured accel y (step/noise ~6) - it must not vote.  x (snr 60)
+    # is past full weight; z (snr 26.7) is partway up the 15..30 fade.
     good_x = (0.050, 0.30, 0.005)
     good_z = (0.052, 0.32, 0.012)
     noisy_y = (0.300, 0.53, 0.093)
     ramps = [[good_x, noisy_y, good_z], [good_x, noisy_y, good_z]]
-    assert np.allclose(combine_axes(ramps, 10.), [0.051, 0.051])
+    wz = (0.32 / 0.012 - 15.) / 15.
+    want = (0.050 + wz * 0.052) / (1. + wz)
+    assert np.allclose(combine_axes(ramps, 15.), [want, want])
 
 
-def test_combine_needs_an_axis_to_pass_on_every_rep():
-    # An axis that drops in and out changes the MIX, and each axis crosses at
-    # its own height - so a part-time witness moves the answer between probes.
+def test_an_axis_FADES_in_rather_than_jumping_in():
+    # Each axis crosses at its own height (z-x offsets -20..+25um across the
+    # bed, measured 2026-09-22), so an axis that jumps from no say to an equal
+    # say as it crosses the threshold moves the answer by half that offset.
+    # Just above the threshold it must carry almost no weight.
+    x = (0.050, 0.30, 0.005)                     # snr 60: full weight
+    z_marginal = (0.070, 0.16, 0.010)            # snr 16: weight 1/15
+    got = combine_axes([[x, None, z_marginal]], 15.)[0]
+    assert abs(got - 0.050) < 0.0015, got
+
+
+def test_combine_needs_an_axis_on_every_rep():
+    # An axis missing from a rep has no crossing there, so it cannot vote.
     x = (0.050, 0.30, 0.005)
     z = (0.070, 0.32, 0.012)
-    assert combine_axes([[x, None, z], [x, None, None]], 10.) == [0.050, 0.050]
+    assert combine_axes([[x, None, z], [x, None, None]], 15.) == [0.050, 0.050]
+
+
+def test_combine_weights_on_the_WORST_rep():
+    # One noisy rep is enough to demote an axis for the whole probe - weights
+    # are shared across reps so every rep reports the same mix.
+    x = (0.050, 0.30, 0.005)
+    z_good, z_bad = (0.070, 0.32, 0.005), (0.070, 0.32, 0.030)   # snr 64, 10.7
+    assert combine_axes([[x, None, z_good], [x, None, z_bad]], 15.) \
+        == [0.050, 0.050]
 
 
 def test_combine_reports_nothing_when_no_axis_is_good():
-    assert combine_axes([[None, (0.3, 0.53, 0.093), None]], 10.) == []
-    assert combine_axes([], 10.) == []
+    assert combine_axes([[None, (0.3, 0.53, 0.093), None]], 15.) == []
+    assert combine_axes([], 15.) == []
 
 
 def _corpus_down_ramps():
-    """112.7Hz textured-PEI verify captures, 2026-09-22 -> {(x,y): [probe]},
-    each probe a list over reps of [(zs, amps) per axis].  {} if absent."""
+    """Every 112.7Hz verify capture in the two corpora -> {group: [probe]},
+    grouped by (corpus, surface, x, y); each probe a list over reps of
+    [(zs, amps) per axis].  {} if the corpora are absent."""
     import os, glob, collections
-    d = os.path.join(os.path.dirname(__file__), '..', '..',
-                     'probe_traces_2026-09-21')
+    root = os.path.join(os.path.dirname(__file__), '..', '..')
     out = collections.defaultdict(list)
-    for f in sorted(glob.glob(os.path.join(d, 'verify*.csv'))):
-        head = open(f).read(400)
-        if 'freq=112.70' not in head or 'textured' not in head:
-            continue
-        xy = head.split('# x=')[1].split('\n')[0]
-        cols, rows = None, []
-        for ln in open(f):
-            if ln.startswith('#'):
+    for corpus in ('probe_traces_2026-09-21', 'probe_traces_2026-09-22'):
+        for f in sorted(glob.glob(os.path.join(root, corpus, 'verify*.csv'))):
+            meta, cols, rows = {}, None, []
+            for ln in open(f):
+                if ln.startswith('#'):
+                    for t in ln[1:].split():
+                        if '=' in t:
+                            k, v = t.split('=', 1)
+                            meta[k] = v
+                    continue
+                p = ln.strip().split(',')
+                if cols is None:
+                    cols = p
+                elif len(p) == len(cols) and p[2] == 'down':
+                    rows.append(p)
+            if meta.get('freq') != '112.70' or 'amp_x' not in (cols or []):
                 continue
-            p = ln.strip().split(',')
-            if cols is None:
-                cols = p
-            elif len(p) == len(cols) and p[2] == 'down':
-                rows.append(p)
-        ai = [cols.index(c) for c in ('amp_x', 'amp_y', 'amp_z')]
-        probe = []
-        for rep in sorted(set(r[3] for r in rows)):
-            r = [x for x in rows if x[3] == rep]
-            zs = [float(x[0]) for x in r]
-            probe.append([(zs, [float(x[i]) for x in r]) for i in ai])
-        out[xy].append(probe)
+            ai = [cols.index(c) for c in ('amp_x', 'amp_y', 'amp_z')]
+            probe = []
+            for rep in sorted(set(r[3] for r in rows)):
+                r = [x for x in rows if x[3] == rep]
+                zs = [float(x[0]) for x in r]
+                probe.append([(zs, [float(x[i]) for x in r]) for i in ai])
+            out[(corpus, meta.get('note'), meta['x'], meta['y'])].append(probe)
     return out
 
 
 def test_all_axes_reproduce_the_measured_repeatability():
-    # Offline on this corpus the rule scored 1.40-3.25um at five of six
-    # points; (30,70) is a known plate defect (11.7um on every estimator).
-    # Median across points must hold at or under 3.5um.
+    # 13 point/surface/session groups at 112.7Hz.  Hard 10-snr gate: median
+    # 3.22um.  15..30 fade: 2.03um.  Hold the fade to 2.2um.
     corpus = _corpus_down_ramps()
     if not corpus:
         return
     sds = []
-    for xy, probes in corpus.items():
+    for key, probes in corpus.items():
         vals = []
         for probe in probes:
             v = combine_axes([[vmin_edge(zs, a, 0.10) for zs, a in rep]
-                              for rep in probe], 10.)
+                              for rep in probe], 15.)
             if v:
                 vals.append(np.mean(v))
-        if len(vals) > 1:
+        if len(vals) >= 5:
             sds.append(float(np.std(vals, ddof=1)) * 1e3)
-    assert len(sds) == 6, sds
-    assert float(np.median(sds)) <= 3.5, sorted(sds)
+    assert len(sds) == 13, len(sds)
+    assert float(np.median(sds)) <= 2.2, sorted(sds)
 
 
 if __name__ == '__main__':
