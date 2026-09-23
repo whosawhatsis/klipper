@@ -273,9 +273,14 @@ warmup: 0.8
 #verify_reps: 1
 #   Down/up ramp pairs performed by contact verification.  Each rep adds one
 #   independent estimate per direction - and presses to the verify depth again.
-#verify_combine: 1
-#   1 (default) reports the MEAN of the down-ramp and up-ramp estimates; 0
-#   reports the down ramp alone.  See "Contact verification" below.
+#verify_combine: 0
+#   0 (default) reports the down ramps alone; 1 reports the MEAN of the
+#   down-ramp and up-ramp estimates.  See "Contact verification" below.
+#verify_min_step: 0.10
+#   Minimum log-amplitude step for a verify ramp to count as spanning contact.
+#verify_min_snr: 10
+#   An accelerometer axis contributes to the measured height only if its step
+#   is at least this many times its own air noise on every rep.
 #trace_dir:
 #   If set, every descent and every verification ramp is saved here as CSV, for
 #   offline analysis.  Unset (the default) writes nothing.
@@ -571,14 +576,19 @@ candidate height, dwells, ramps back UP, and looks for the amplitude edge on
 each ramp.  This both rejects false halts (a halt in mid air shows no drop when
 re-crossed) and refines the height.
 
-Both directions are analysed and `verify_combine: 1` reports their **mean**.
-That is worth knowing about because the two directions do not agree: on the
-development machine the up-ramp estimate sat anywhere from 1 um to 20 um from
-the down-ramp estimate, and the difference varied with **position on the bed**
-rather than being a fixed machine constant, so it cannot be calibrated out.
-Averaging the two cancels it by construction, and also measured better
-(2.3 um vs 2.9 um pooled repeatability).  Set `verify_combine: 0` to report the
-down ramp alone if you want the older behaviour.
+The height is measured on **every accelerometer axis** of each ramp: find the
+amplitude minimum (the response is V-shaped on some axes - it falls, then climbs
+back as the nozzle presses deeper), then read where the amplitude crosses
+half-way back up to its air level.  An axis contributes only if its step is at
+least `verify_min_snr` times its own air noise on every rep; the surviving axes
+are averaged.  No axis is chosen in advance - on the development machine one
+axis had 18x the air noise of the others and was excluded by this rule alone.
+
+By default only the DOWN ramps are reported.  The up ramp reads consistently
+higher (~20 um on the development machine, varying with bed position), and the
+down ramp was the more repeatable direction at every point tested (median
+2.4 um vs 4.8 um).  The up-minus-down difference is still measured and logged
+as a check.  Set `verify_combine: 1` to report the mean of both directions.
 
 `verify_reps` raises the number of ramp pairs.  Each rep is an independent
 estimate per direction, but also another press to the verification depth, so

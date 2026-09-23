@@ -684,12 +684,21 @@ class ResonanceProbe:
         # up-vs-down bias) rather than a longer pooled sample.  Costs time:
         # roughly one ramp pair per rep at VERIFY_RAMP_SPEED.
         self.verify_reps = config.getint('verify_reps', 1, minval=1, maxval=10)
-        # 1 = report the mean of the down and up estimates (default), 0 = down
-        # ramp only, kept for A/B.  Averaging cancels the up/down bias, which is
-        # POSITIONAL rather than a machine constant: +1..+2um at one point,
-        # +15..+20um at another, and it has been seen negative.
-        self.verify_combine = config.getint('verify_combine', 1, minval=0,
+        # 0 = report the DOWN ramps only (default), 1 = the mean of down and
+        # up.  Down beat up at 6 of 6 points on 2026-09-22 (median 2.38um vs
+        # 4.82um) and in 21 of 33 groups re-derived with one algorithm; pooling
+        # the two mixes populations ~20um apart.  Up stays measured - the
+        # up-minus-down bias is the verification signal, not a second estimate.
+        self.verify_combine = config.getint('verify_combine', 0, minval=0,
                                             maxval=1)
+        # All-axes V-minimum measurement (_vmin_edge/_combine_axes).  A ramp
+        # must step at least verify_min_step log units to count as spanning
+        # contact, and an axis votes only at step/noise >= verify_min_snr on
+        # every rep.  Offline, the gate held 3.24um median at 10 and 4.1-4.5um
+        # at 6-14, so it is a real knob, not a free one.
+        self.verify_min_step = config.getfloat('verify_min_step', 0.10,
+                                               above=0.)
+        self.verify_min_snr = config.getfloat('verify_min_snr', 10., above=0.)
         # Second confirm criterion, OR'd with the ratio test, so it can only ADD
         # confirmations - never remove one.  DEFAULT OFF, because the only thing
         # it was ever measured to contribute was a false one: on 2026-08-06 it
@@ -1903,7 +1912,9 @@ class HaltingContactProbe:
         # UP estimate, so raising this trades time for datapoints - both for a
         # better refined Z and for measuring the up/down bias.
         self._verify_reps = getattr(rp, 'verify_reps', 1) or 1
-        self._verify_combine = getattr(rp, 'verify_combine', 1)
+        self._verify_combine = getattr(rp, 'verify_combine', 0)
+        self.verify_min_step = getattr(rp, 'verify_min_step', 0.10)
+        self.verify_min_snr = getattr(rp, 'verify_min_snr', 10.)
         # Read from the live config rather than hardcoded here - a literal that
         # shadows a configured value is a mistake this module has made before.
         self._verify_step_snr = getattr(rp, 'verify_step_snr', 0.)
@@ -2370,6 +2381,7 @@ class HaltingContactProbe:
         # needed before the resonance damps at all) is measurable rather than
         # averaged away unseen.
         down_edges, up_edges = [], []
+        vmin = {'down': [], 'up': []}
         step_snr = 0.
         for r in range(reps):
             for tag, bucket in (('down', down_edges), ('up', up_edges)):
@@ -2382,6 +2394,19 @@ class HaltingContactProbe:
                     bucket.append(edge)
                 if tag == 'down':
                     step_snr = max(step_snr, snr)
+                vmin[tag].append([self._vmin_edge(wz[m], w[m],
+                                                  self.verify_min_step)
+                                  for w in wamps])
+        # Measure with the all-axes V-minimum crossing; the single-axis
+        # _ramp_edge above stays as the fallback when no axis qualifies.
+        for tag, bucket in (('down', down_edges), ('up', up_edges)):
+            v = self._combine_axes(vmin[tag], self.verify_min_snr)
+            _dbg(gcmd, "verify: %s all-axes edges [%s] (single-axis [%s]%s)"
+                 % (tag, ",".join("%.4f" % e for e in v),
+                    ",".join("%.4f" % e for e in bucket),
+                    " superseded" if v else " used"))
+            if v:
+                bucket[:] = v
         # MEAN, not median.  Measured over 26 probes: the mean beats the median
         # at every level (down 2.63 vs 2.97um, up 2.88 vs 2.96, all 2.34 vs
         # 2.46), and it beats it EVEN THOUGH one down ramp in three is a ~12um
@@ -2536,6 +2561,67 @@ class HaltingContactProbe:
     # contact, plus the step SNR.  'descending' picks which way the ramp runs
     # and therefore which sign the contact edge has: pressing in makes the
     # amplitude FALL, releasing makes it RISE.  Returns (edge_z, snr).
+    # MEASUREMENT estimator: V-minimum anchor + half-way crossing on the rising
+    # (air) side, in log amplitude, one axis of one ramp.  The contact response
+    # is V-SHAPED on some axes - it falls to a minimum and climbs back as the
+    # press deepens - so a contact level taken from the deepest samples reads
+    # high; the ramp's own minimum (a moving median, since a bare minimum of
+    # noisy windows invents drops) does not.  Sorts by Z, so it reads either
+    # direction.  -> (edge, step, noise) or None when the ramp does not span a
+    # step of at least min_step log units: air-only ramps under false halts
+    # stepped 0.01-0.06 against 0.28-0.36 for real contacts (2026-09-22).
+    @staticmethod
+    def _vmin_edge(zs, amps, min_step, k=5):
+        import numpy as np
+        zs = np.asarray(zs, dtype=np.float64)
+        o = np.argsort(zs)
+        z = zs[o]
+        y = np.log(np.maximum(np.asarray(amps, dtype=np.float64)[o], 1.))
+        n = len(z)
+        if n < 2 * k:
+            return None
+        m = max(3, n // 4)
+        air = float(np.median(y[-m:]))
+        h = k // 2
+        s = [np.median(y[max(0, i - h):i + h + 1]) for i in range(n)]
+        i0 = int(np.argmin(s))
+        step = air - float(s[i0])
+        if step < min_step:
+            return None
+        noise = float(np.median(np.abs(y[-m:] - air))) + 1e-9
+        half = air - 0.5 * step
+        for i in range(i0, n - 1):
+            d0, d1 = y[i] - half, y[i + 1] - half
+            if d0 < 0. <= d1:
+                return (float(z[i] + (-d0) * (z[i + 1] - z[i]) / (d1 - d0)),
+                        step, noise)
+        return None
+
+    # Combine _vmin_edge results from EVERY axis of every rep of one direction
+    # (ramps[rep][axis] = result or None).  No axis is picked in advance; the
+    # data decides.  An axis votes only if its step/noise >= min_snr on EVERY
+    # rep: each axis crosses at its own height, so a part-time witness shifts
+    # the mix - and the answer - from probe to probe.  Measured on 2026-09-22
+    # 112.7Hz captures: accel y had step/noise ~4 against x ~61 and z ~29, and
+    # its reps disagreed by 31um median against 1.5-1.9um for x and z.
+    # ponytail: plain mean of per-axis crossings, which leaks each axis's
+    # constant crossing offset whenever axes pass at some points and not others
+    # ((60,60) 10.5um vs 3.8um on x alone); per-axis offset calibration is the
+    # upgrade if that matters.
+    # Returns one edge per rep (the mean over the voting axes), so the caller's
+    # mean and spread across reps keep their meaning; [] when no axis votes.
+    @staticmethod
+    def _combine_axes(ramps, min_snr):
+        if not ramps:
+            return []
+        voters = [a for a in range(max(len(r) for r in ramps))
+                  if all(a < len(r) and r[a] is not None
+                         and r[a][1] / r[a][2] >= min_snr for r in ramps)]
+        if not voters:
+            return []
+        return [float(sum(r[a][0] for a in voters) / len(voters))
+                for r in ramps]
+
     def _ramp_edge(self, zs, amps, descending, air_amp, contact_amp):
         import numpy as np
         zs = np.asarray(zs, dtype=np.float64)
