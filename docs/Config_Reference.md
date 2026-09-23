@@ -2398,6 +2398,14 @@ excitation_frequency:
 #   Minimum log-amplitude step for a verification ramp to count as spanning
 #   contact. Ramps below it (e.g. under a false halt in mid air) contribute
 #   no height.
+#verify_ramp_speed: 0.15
+#   Speed (mm/s) of the contact verification ramps. Slower ramps put more
+#   samples on the contact slope, which the contact point is fitted from.
+#verify_up: 0.14
+#verify_down: 0.10
+#   How far (mm) the verification ramps extend above and below the halt
+#   height. Kept short so that two reps fit the segment budget at a slow
+#   ramp speed.
 #verify_min_snr: 15
 #   An accelerometer axis contributes to the measured contact height once its
 #   step exceeds this many times its own air noise (on its worst rep), with

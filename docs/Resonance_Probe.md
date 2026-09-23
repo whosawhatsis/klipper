@@ -278,6 +278,12 @@ warmup: 0.8
 #   down-ramp and up-ramp estimates.  See "Contact verification" below.
 #verify_min_step: 0.10
 #   Minimum log-amplitude step for a verify ramp to count as spanning contact.
+#verify_ramp_speed: 0.15
+#verify_up: 0.14
+#verify_down: 0.10
+#   Verification ramp speed (mm/s) and extent above and below the halt (mm).
+#   Slow and short: more samples on the contact slope while two reps still
+#   fit the segment budget at ~110 Hz.
 #verify_min_snr: 15
 #   An accelerometer axis contributes to the measured height once its step
 #   exceeds this many times its own air noise, fading in to full weight at
@@ -577,15 +583,29 @@ candidate height, dwells, ramps back UP, and looks for the amplitude edge on
 each ramp.  This both rejects false halts (a halt in mid air shows no drop when
 re-crossed) and refines the height.
 
-The height is measured on **every accelerometer axis** of each ramp: find the
-amplitude minimum (the response is V-shaped on some axes - it falls, then climbs
-back as the nozzle presses deeper), then read where the amplitude crosses
-half-way back up to its air level.  The axes are averaged with weights that
-fade in from zero at `verify_min_snr` times the axis's own air noise to full at
-twice that.  A fade rather than a cutoff matters because each axis reads
-contact at a slightly different height: an axis switching on and off between
-probes would move the result by that offset.  No axis is chosen in advance - on the development machine one
-axis had 18x the air noise of the others and was excluded by this rule alone.
+The reported height is the **contact point**: where a straight line along the
+contact slope meets the straight line of the amplitude in air, on the ramp's
+ln-amplitude trace.  The slope line passes through the point where the amplitude
+is half-way between air and its lowest value, and its angle is fitted over the
+middle 10-90% of the slope.  That half-way point on its own reads about 20 um
+below where contact begins, by a different amount on every axis, which is why
+it is only used to position the slope line.
+
+Every accelerometer axis is used, and no axis is chosen in advance.  Within one
+verification, from its own ramps and nothing earlier, the axis whose contact
+point is most precisely determined (lowest predicted standard error, among axes
+whose step is at least `verify_min_snr` times their air noise) becomes the
+anchor.  The other axes are then fitted at the anchor's height - which lets an
+axis whose amplitude RISES on contact contribute - and every fit within 15 um of
+the anchor is combined in one inverse-variance weighted average.  If no axis
+falls on contact the probe reports the older half-way estimate instead and says
+so in its output.
+
+The ramp is slow and short by default (`verify_ramp_speed` 0.15 mm/s over
+`verify_up` 0.14 + `verify_down` 0.10 mm), which doubles the samples on the
+contact slope; at 10 fresh points it halved the probe-to-probe scatter of the
+contact point.  At high excitation frequencies the segment budget may cap
+`verify_reps` to 1, and the probe says so.
 
 By default only the DOWN ramps are reported.  The up ramp reads consistently
 higher (~20 um on the development machine, varying with bed position), and the
