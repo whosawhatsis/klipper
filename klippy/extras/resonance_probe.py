@@ -699,6 +699,15 @@ class ResonanceProbe:
         self.verify_min_step = config.getfloat('verify_min_step', 0.10,
                                                above=0.)
         self.verify_min_snr = config.getfloat('verify_min_snr', 15., above=0.)
+        # Verify ramp shape.  Slow (0.15mm/s) doubles the samples on the
+        # contact slope and halved contact-point scatter at 10 fresh points
+        # (median 4.54 -> 2.02um, better at 8/9, 2026-09-23).  The ramp is
+        # SHORT so two reps still fit the 2000-segment budget at 112.7Hz
+        # (1984 segments); at higher frequencies the budget guard caps reps.
+        self.verify_ramp_speed = config.getfloat('verify_ramp_speed', 0.15,
+                                                 above=0.)
+        self.verify_up = config.getfloat('verify_up', 0.14, above=0.)
+        self.verify_down = config.getfloat('verify_down', 0.10, above=0.)
         # Second confirm criterion, OR'd with the ratio test, so it can only ADD
         # confirmations - never remove one.  DEFAULT OFF, because the only thing
         # it was ever measured to contribute was a false one: on 2026-08-06 it
@@ -1915,6 +1924,9 @@ class HaltingContactProbe:
         self._verify_combine = getattr(rp, 'verify_combine', 0)
         self.verify_min_step = getattr(rp, 'verify_min_step', 0.10)
         self.verify_min_snr = getattr(rp, 'verify_min_snr', 15.)
+        self.verify_ramp_speed = getattr(rp, 'verify_ramp_speed', 0.15)
+        self.verify_up = getattr(rp, 'verify_up', 0.14)
+        self.verify_down = getattr(rp, 'verify_down', 0.10)
         # Read from the live config rather than hardcoded here - a literal that
         # shadows a configured value is a mistake this module has made before.
         self._verify_step_snr = getattr(rp, 'verify_step_snr', 0.)
@@ -2154,13 +2166,14 @@ class HaltingContactProbe:
         # a third more segments per rep, and segments are what shut the MCU
         # down.  The DOWN side still has to clear the damping cliff; that is
         # VERIFY_DOWN's job, not this one.
-        up = gcmd.get_float("VERIFY_UP", CONTACT_UP_MM, above=0.)
+        up = gcmd.get_float("VERIFY_UP", self.verify_up, above=0.)
         if up_override is not None:
             up = up_override
-        down = gcmd.get_float("VERIFY_DOWN", CONTACT_DOWN_MM, above=0.)
+        down = gcmd.get_float("VERIFY_DOWN", self.verify_down, above=0.)
         reps = gcmd.get_int("VERIFY_REPS", self._verify_reps, minval=1,
                             maxval=10)
-        ramp_speed = gcmd.get_float("VERIFY_RAMP_SPEED", 0.5, above=0.,
+        ramp_speed = gcmd.get_float("VERIFY_RAMP_SPEED", self.verify_ramp_speed,
+                                    above=0.,
                                     maxval=5.)
         f = self.excitation_freq
         accel = self.accel_per_hz * f
@@ -2382,6 +2395,7 @@ class HaltingContactProbe:
         # averaged away unseen.
         down_edges, up_edges = [], []
         vmin = {'down': [], 'up': []}
+        ramps = {'down': [], 'up': []}
         step_snr = 0.
         for r in range(reps):
             for tag, bucket in (('down', down_edges), ('up', up_edges)):
@@ -2397,6 +2411,7 @@ class HaltingContactProbe:
                 vmin[tag].append([self._vmin_edge(wz[m], w[m],
                                                   self.verify_min_step)
                                   for w in wamps])
+                ramps[tag].append((wz[m], [w[m] for w in wamps]))
         # Measure with the all-axes V-minimum crossing; the single-axis
         # _ramp_edge above stays as the fallback when no axis qualifies.
         for tag, bucket in (('down', down_edges), ('up', up_edges)):
@@ -2407,6 +2422,27 @@ class HaltingContactProbe:
                     " superseded" if v else " used"))
             if v:
                 bucket[:] = v
+        # CONTACT POINT supersedes both: one estimate per direction from all
+        # of this call's ramps (see _contact_estimate).  When no axis falls on
+        # contact it returns None, and the half-way chain above stands - but
+        # that reads a DIFFERENT height (~23um lower), so say so rather than
+        # mix the two quantities silently.
+        contact = {}
+        for tag, bucket in (('down', down_edges), ('up', up_edges)):
+            c = self._contact_estimate(ramps[tag], self.verify_min_step,
+                                       self.verify_min_snr)
+            contact[tag] = c
+            if c is not None:
+                _dbg(gcmd, "verify: %s contact point %.4f from %d fits,"
+                     " anchor accel %s (per rep [%s])"
+                     % (tag, c['z'], c['n_fits'], 'xyz'[c['anchor']],
+                        ",".join("%.4f" % e for e in c['per_rep'])))
+                bucket[:] = c['per_rep']
+            elif tag == 'down' and bucket:
+                gcmd.respond_info(
+                    "verify: no contact-point fit (no axis falls on contact"
+                    " here); reporting the half-way estimate, which reads"
+                    " ~20um below the contact point")
         # MEAN, not median.  Measured over 26 probes: the mean beats the median
         # at every level (down 2.63 vs 2.97um, up 2.88 vs 2.96, all 2.34 vs
         # 2.46), and it beats it EVEN THOUGH one down ramp in three is a ~12um
@@ -2436,6 +2472,10 @@ class HaltingContactProbe:
         def _spread(vals):
             return (max(vals) - min(vals)) if len(vals) > 1 else 0.
         r_down, r_up = _agg(down_edges), _agg(up_edges)
+        if contact.get('down') is not None:
+            r_down = contact['down']['z']
+        if contact.get('up') is not None:
+            r_up = contact['up']['z']
         bias = (r_up - r_down) if (r_down is not None
                                    and r_up is not None) else None
         # Mean of both directions.  Measured 2.34um vs 2.92um for down-only,
@@ -2473,6 +2513,8 @@ class HaltingContactProbe:
             'down_n': len(down_edges), 'up_n': len(up_edges),
             'down_spread': _spread(down_edges), 'up_spread': _spread(up_edges),
             'combined': bool(combine and bias is not None),
+            'method': 'contact' if contact.get('down') is not None
+                      else 'halfway',
             'edge_lag': edge_lag, 'overshoot': overshoot,
         }
         # Save the ramp windows.  Which estimator to report (down / up / their
@@ -2633,6 +2675,288 @@ class HaltingContactProbe:
         tot = sum(weights.values())
         return [float(sum(w * r[a][0] for a, w in weights.items()) / tot)
                 for r in ramps]
+
+    # ------------------------------------------------------------------
+    # CONTACT POINT: where the contact slope's line meets the air line.
+    #
+    # The half-way crossing (_vmin_edge) sits partway DOWN the slope - a
+    # median ~23um below where contact begins on x, by a different amount on
+    # every axis, which is why the axes' half-way readings disagreed by
+    # 20-25um.  The contact point is common to all axes (guided fits agree
+    # within ~2um).  The slope line is pivoted ON the half-way crossing, its
+    # best-located point, and only its angle is fitted (10-90% of the slope),
+    # because a free two-line fit extrapolates a noisy intercept and measured
+    # ~2x the scatter.  Offline, 2026-09-23: local/intersect_proto/.
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _ols(x, y):
+        """-> (slope, intercept, 2x2 covariance, residual sd) or None."""
+        import numpy as np
+        n = len(x)
+        if n < 3:
+            return None
+        X = np.c_[x, np.ones(n)]
+        beta = np.linalg.lstsq(X, y, rcond=None)[0]
+        r = y - X.dot(beta)
+        s2 = float(r.dot(r)) / max(n - 2, 1)
+        return (float(beta[0]), float(beta[1]),
+                s2 * np.linalg.inv(X.T.dot(X)), s2 ** .5)
+
+    @staticmethod
+    def _movmed(y, k=5):
+        import numpy as np
+        h = k // 2
+        return np.array([np.median(y[max(0, i - h):i + h + 1])
+                         for i in range(len(y))])
+
+    @staticmethod
+    def _tangent_knee(zs, amps, min_step, band=(0.1, 0.9), iters=2):
+        """Independent contact point on one axis of one ramp whose amplitude
+        FALLS on contact (the V-minimum side).  -> dict(knee, zh, yh, mf,
+        air=(slope, intercept), zt) or None."""
+        import numpy as np
+        H = HaltingContactProbe
+        z = np.asarray(zs, dtype=np.float64)
+        o = np.argsort(z)
+        z = z[o]
+        y = np.log(np.maximum(np.asarray(amps, dtype=np.float64)[o], 1.))
+        n = len(z)
+        if n < 10:
+            return None
+        m = max(3, n // 4)
+        s = H._movmed(y)
+        air0 = float(np.median(y[-m:]))
+        i0 = int(np.argmin(s))
+        step = air0 - float(s[i0])
+        if step < min_step:
+            return None
+        # ponytail: half level from the flat air median, not the air line at
+        # the knee - exact to 0.2 ln/mm of air slope (measured max 0.19),
+        # +4um at 0.5.  Take it from the refitted air line if slopes grow.
+        half = air0 - .5 * step
+        j = None
+        for i in range(i0, n - 1):
+            if y[i] - half < 0. <= y[i + 1] - half:
+                j = i
+                break
+        if j is None:
+            return None
+        zh = z[j] + (half - y[j]) * (z[j + 1] - z[j]) / (y[j + 1] - y[j])
+        frac = (y[i0:] - s[i0]) / step
+        lo_i = j
+        while lo_i > i0 and frac[lo_i - 1 - i0] >= band[0]:
+            lo_i -= 1
+        hi_i = j + 1
+        while hi_i < n - 1 and frac[hi_i + 1 - i0] <= band[1]:
+            hi_i += 1
+        idx = np.arange(lo_i, hi_i + 1)
+        if len(idx) < 2:
+            return None
+        if len(idx) >= 3:
+            mf = H._ols(z[idx], y[idx])[0]
+        else:
+            mf = (y[idx[-1]] - y[idx[0]]) / (z[idx[-1]] - z[idx[0]])
+        if mf <= 1e-6:
+            return None
+        knee = zh + (air0 - half) / mf
+        ma, ba = 0., air0
+        for _ in range(iters):
+            am = z > knee + 0.005
+            if am.sum() < 5:
+                break
+            ma, ba = H._ols(z[am], y[am])[:2]
+            if abs(mf - ma) < 1e-9:
+                return None
+            knee = (ba - half + mf * zh) / (mf - ma)
+        return dict(knee=float(knee), zh=float(zh), yh=float(half),
+                    mf=float(mf), air=(float(ma), float(ba)), zt=float(z[i0]))
+
+    @staticmethod
+    def _anchored_turn(z, y, z0, look=0.025, reach_down=0.12):
+        """First extremum below z0 on the side the trace leaves air toward."""
+        import numpy as np
+        H = HaltingContactProbe
+        am = z > z0 + 0.005
+        if am.sum() < 5:
+            return None
+        m, b, _, sd = H._ols(z[am], y[am])
+        dev = H._movmed(y) - (m * z + b)
+        near = (z <= z0) & (z >= z0 - look)
+        if near.sum() < 2:
+            return None
+        sgn = 1 if np.mean(dev[near]) > 0 else -1
+        below = np.where((z <= z0) & (z >= z0 - reach_down))[0][::-1]
+        i_e = below[0]
+        for j in below[1:]:
+            if sgn * dev[j] >= sgn * dev[i_e]:
+                i_e = j
+            elif sgn * (dev[i_e] - dev[j]) > sd:
+                break
+        return z[i_e]
+
+    @staticmethod
+    def _guided_tangent(zs, amps, z0, gap=0.005, band=(0.1, 0.9), iters=2):
+        """Contact point on one axis GIVEN an anchor height z0: the air line
+        above z0, the slope from z0 down to its first turning point in either
+        direction (accel y RISES on contact at some points), pivoted on its
+        half-way crossing.  -> dict like _tangent_knee plus snr, or None."""
+        import numpy as np
+        H = HaltingContactProbe
+        z = np.asarray(zs, dtype=np.float64)
+        o = np.argsort(z)
+        z = z[o]
+        y = np.log(np.maximum(np.asarray(amps, dtype=np.float64)[o], 1.))
+        zt = H._anchored_turn(z, y, z0)
+        if zt is None:
+            return None
+        am = z > z0 + gap
+        if am.sum() < 5:
+            return None
+        ma, ba, _, sd = H._ols(z[am], y[am])
+        fl = np.where((z >= zt) & (z <= z0 + gap))[0]
+        if len(fl) < 3:
+            return None
+        dev = y[fl] - (ma * z[fl] + ba)
+        exc = y[fl[0]] - (ma * z[fl[0]] + ba)
+        if abs(exc) < 3 * sd:
+            return None
+        frac = dev / exc
+        zh = None
+        for k in range(len(fl) - 1, 0, -1):
+            a, b = frac[k], frac[k - 1]
+            if a < .5 <= b:
+                zh = z[fl[k]] + (.5 - a) * (z[fl[k - 1]] - z[fl[k]]) / (b - a)
+                break
+        if zh is None:
+            return None
+        sel = fl[(frac >= band[0]) & (frac <= band[1])]
+        if len(sel) < 2:
+            return None
+        if len(sel) >= 3:
+            mf = H._ols(z[sel], y[sel])[0]
+        else:
+            mf = (y[sel[-1]] - y[sel[0]]) / (z[sel[-1]] - z[sel[0]])
+        yh = ma * zh + ba + .5 * exc
+        if abs(mf - ma) < 1e-9 or np.sign(mf - ma) != -np.sign(exc):
+            return None
+        knee = (ba - yh + mf * zh) / (mf - ma)
+        for _ in range(iters - 1):
+            am = z > knee + gap
+            if am.sum() < 5:
+                break
+            ma, ba, _, sd = H._ols(z[am], y[am])
+            if abs(mf - ma) < 1e-9:
+                return None
+            knee = (ba - yh + mf * zh) / (mf - ma)
+        return dict(knee=float(knee), zh=float(zh), yh=float(yh), mf=float(mf),
+                    air=(float(ma), float(ba)), zt=float(zt),
+                    snr=abs(exc) / sd)
+
+    @staticmethod
+    def _knee_sigma(zs, amps, f, gap=0.005, band=(0.1, 0.9)):
+        """Predicted standard error (mm) of one contact point: half-way point
+        noise over the slope, slope error lever-armed over (knee - half-way),
+        and the air line's error at the knee.  Calibrated 2026-09-23: x 1.8
+        predicted vs 2.1um actual, z 3.1 vs 3.6.  Optimistic ~2x on accel y,
+        whose air noise wanders."""
+        import numpy as np
+        H = HaltingContactProbe
+        z = np.asarray(zs, dtype=np.float64)
+        o = np.argsort(z)
+        z = z[o]
+        y = np.log(np.maximum(np.asarray(amps, dtype=np.float64)[o], 1.))
+        ma, ba = f['air']
+        mf, knee = f['mf'], f['knee']
+        am = z > knee + gap
+        if am.sum() < 5 or abs(mf - ma) < 1e-9:
+            return float('inf')
+        A = H._ols(z[am], y[am])
+        X = np.array([knee, 1.])
+        se_air = float(max(X.dot(A[2]).dot(X), 0.)) ** .5
+        fl = (z >= f['zt']) & (z <= knee)
+        if fl.sum() < 3:
+            return float('inf')
+        zf, yf = z[fl], y[fl]
+        ext = yf[np.argmin(zf)] - (A[0] * zf.min() + A[1])
+        if abs(ext) < 1e-9:
+            return float('inf')
+        fr = (yf - (A[0] * zf + A[1])) / ext
+        sel = (fr >= band[0]) & (fr <= band[1])
+        if sel.sum() < 2:
+            return float('inf')
+        if sel.sum() == 2:
+            zz = zf[sel]
+            se_mf = 2. ** .5 * A[3] / abs(zz[1] - zz[0])
+        else:
+            se_mf = float(max(H._ols(zf[sel], yf[sel])[2][0, 0], 0.)) ** .5
+        d = abs(knee - f['zh'])
+        s = abs(mf - ma)
+        return float(((A[3] / s) ** 2 + (d * se_mf / s) ** 2
+                      + (se_air / s) ** 2) ** .5)
+
+    @staticmethod
+    def _contact_estimate(ramps, min_step, min_snr, tol=0.015):
+        """ONE contact point from all the ramps of ONE verify call.
+
+        ramps = [(zs, [amps per axis])] for one direction.  Nothing carries
+        over between probes: the anchor axis is chosen here, from this call's
+        own ramps, as the axis with the lowest median predicted sigma among
+        those that pass the deployed step/noise gate (an air-only ramp under a
+        false halt must not anchor).  Every axis is then fitted guided at the
+        anchor's height and accepted within tol of it, and one inverse-variance
+        average is taken over every accepted fit in the call.  Choosing the
+        axis per RAMP instead was worse: an axis's own fit can follow a
+        different feature (z's later fall at (60,45)), -25..+43um from x's.
+
+        -> dict(z, anchor, per_rep, n_fits) or None when no axis falls on
+        contact (the anchor is falling-only; a rising-only point such as
+        (85,25) gets None and the caller falls back).
+        """
+        import numpy as np
+        H = HaltingContactProbe
+        if not ramps:
+            return None
+        nax = len(ramps[0][1])
+        ind = []
+        for zs, axes in ramps:
+            row = []
+            for a in axes:
+                g = H._vmin_edge(zs, a, min_step)
+                f = (H._tangent_knee(zs, a, min_step)
+                     if g is not None and g[1] / g[2] >= min_snr else None)
+                sg = H._knee_sigma(zs, a, f) if f is not None else float('inf')
+                row.append((f['knee'], sg) if f is not None
+                           and np.isfinite(sg) else None)
+            ind.append(row)
+        med = [np.median([r[a][1] for r in ind if r[a]] or [np.inf])
+               for a in range(nax)]
+        anc = int(np.argmin(med))
+        if not np.isfinite(med[anc]):
+            return None
+        allf, per_rep = [], []
+        for (zs, axes), row in zip(ramps, ind):
+            if not row[anc]:
+                continue
+            z0, s0 = row[anc]
+            fits = [(s0, z0)]
+            for b, a in enumerate(axes):
+                if b == anc:
+                    continue
+                f = H._guided_tangent(zs, a, z0)
+                if f is None or abs(f['knee'] - z0) > tol:
+                    continue
+                sg = H._knee_sigma(zs, a, f)
+                if np.isfinite(sg) and sg > 0.:
+                    fits.append((sg, f['knee']))
+            w = [1. / sg ** 2 for sg, _ in fits]
+            per_rep.append(sum(wi * k for wi, (_, k) in zip(w, fits)) / sum(w))
+            allf.extend(fits)
+        if not allf:
+            return None
+        w = [1. / sg ** 2 for sg, _ in allf]
+        return dict(z=float(sum(wi * k for wi, (_, k) in zip(w, allf)) / sum(w)),
+                    anchor=anc, per_rep=[float(v) for v in per_rep],
+                    n_fits=len(allf))
 
     def _ramp_edge(self, zs, amps, descending, air_amp, contact_amp):
         import numpy as np
