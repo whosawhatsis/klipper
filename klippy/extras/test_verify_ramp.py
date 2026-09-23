@@ -383,6 +383,140 @@ def test_all_axes_reproduce_the_measured_repeatability():
     assert float(np.median(sds)) <= 2.2, sorted(sds)
 
 
+# --- contact point: air line x slope line pivoted on the half-way crossing ------
+# The half-way crossing sits partway DOWN the contact slope (a median ~23um below
+# where contact begins, and by a different amount per axis).  The contact point
+# is where a line along that slope meets the air line.  The slope line is pivoted
+# on the half-way crossing (its most precisely located point) and only its angle
+# is fitted, over the 10-90% part of the slope.
+tangent_knee = HaltingContactProbe._tangent_knee
+guided_tangent = HaltingContactProbe._guided_tangent
+contact_estimate = HaltingContactProbe._contact_estimate
+
+
+def _two_line(knee=0.100, air=7.0, depth=0.4, width=0.030, climb=0.3, sign=-1,
+              step=0.0033, noise=0., seed=3, air_slope=0.):
+    """ln-amplitude ramp: straight air line above `knee`, a straight slope of
+    `depth` over `width` below it (falling if sign<0, rising if sign>0), then a
+    climb back (a V) of `climb` further down."""
+    rng = np.random.default_rng(seed)
+    zs = np.round(np.arange(0.24, -0.10, -step), 5)
+    y = air + air_slope * (zs - knee)
+    bot = knee - width
+    fl = (zs < knee) & (zs >= bot)
+    y = np.where(fl, air + sign * depth * (knee - zs) / width, y)
+    deep = zs < bot
+    y = np.where(deep, air + sign * depth - sign * climb * (bot - zs) / (bot + 0.10), y)
+    if noise:
+        y = y + rng.normal(0., noise, len(zs))
+    return zs, np.exp(y)
+
+
+def test_tangent_knee_finds_where_the_slope_meets_the_air_line():
+    zs, amps = _two_line()
+    f = tangent_knee(zs, amps, 0.10)
+    assert abs(f['knee'] - 0.100) <= 0.002, f['knee']
+    # and NOT the half-way crossing, which sits half the slope's width lower
+    assert abs(f['zh'] - 0.085) <= 0.003, f['zh']
+
+
+def test_tangent_knee_follows_a_sloped_air_line():
+    # 0.2 ln/mm: the steepest air slope measured on this machine is 0.19.
+    # (At 0.5 the half level, taken from the flat air median, biases +4um.)
+    zs, amps = _two_line(air_slope=0.2)
+    assert abs(tangent_knee(zs, amps, 0.10)['knee'] - 0.100) <= 0.003
+
+
+def test_tangent_knee_rejects_an_air_only_ramp():
+    zs = np.round(np.arange(0.24, -0.10, -0.0033), 5)
+    amps = np.exp(7.0 + 0.02 * np.sin(zs * 300.))
+    assert tangent_knee(zs, amps, 0.10) is None
+
+
+def test_guided_fit_reads_a_RISING_axis_at_the_anchor():
+    # accel y rises on contact at some points; the anchor supplies where to look
+    zs, amps = _two_line(sign=+1, air=5.0, depth=1.0, width=0.040, climb=0.)
+    f = guided_tangent(zs, amps, 0.100)
+    assert f is not None and abs(f['knee'] - 0.100) <= 0.003, f
+
+
+def test_guided_fit_uses_the_first_departure_not_a_later_fall():
+    # z at (60,45): bumps UP where contact begins, then falls much further;
+    # the guided fit must follow the bump that starts at the anchor
+    zs = np.round(np.arange(0.24, -0.10, -0.0033), 5)
+    y = np.where(zs >= 0.100, 6.8, np.where(zs >= 0.070, 6.8 + 0.2 * (0.100 - zs) / 0.030,
+                 7.0 - 0.6 * (0.070 - zs) / 0.030))
+    y = np.maximum(y, 6.2)
+    f = guided_tangent(zs, np.exp(y), 0.100)
+    assert f is not None and abs(f['knee'] - 0.100) <= 0.004, f
+
+
+def test_contact_estimate_combines_axes_at_one_point():
+    ramps = []
+    for seed in (1, 2):
+        zs, ax = _two_line(noise=0.004, seed=seed)
+        _, ay = _two_line(sign=+1, air=5.0, depth=1.0, width=0.040, climb=0., noise=0.08, seed=seed + 10)
+        _, az = _two_line(air=6.8, depth=0.5, width=0.020, climb=0.2, noise=0.008, seed=seed + 20)
+        ramps.append((zs, [ax, ay, az]))
+    r = contact_estimate(ramps, 0.10, 15.)
+    assert r is not None and abs(r['z'] - 0.100) <= 0.003, r
+    assert r['anchor'] in (0, 2), r
+    assert len(r['per_rep']) == 2, r
+
+
+def test_contact_estimate_reports_nothing_for_air_only_ramps():
+    zs = np.round(np.arange(0.24, -0.10, -0.0033), 5)
+    air = np.exp(7.0 + 0.02 * np.sin(zs * 300.))
+    assert contact_estimate([(zs, [air, air, air])] * 2, 0.10, 15.) is None
+
+
+def _manifest_groups(corpus, manifest, arm):
+    import os, json
+    d = os.path.join(os.path.dirname(__file__), '..', '..', corpus)
+    mp = os.path.join(d, manifest)
+    if not os.path.exists(mp):
+        return {}
+    out = {}
+    for m in json.load(open(mp)):
+        if m['arm'] != arm:
+            continue
+        probes = []
+        for f in m['files']:
+            cols, rows = None, []
+            for ln in open(os.path.join(d, f)):
+                if ln.startswith('#'):
+                    continue
+                p = ln.strip().split(',')
+                if cols is None:
+                    cols = p
+                elif len(p) == len(cols) and p[2] == 'down':
+                    rows.append(p)
+            ai = [cols.index(c) for c in ('amp_x', 'amp_y', 'amp_z')]
+            probe = []
+            for rep in sorted(set(r[3] for r in rows)):
+                r = [x for x in rows if x[3] == rep]
+                probe.append(([float(x[0]) for x in r], [[float(x[i]) for x in r] for i in ai]))
+            probes.append(probe)
+        out[(m['x'], m['y'])] = probes
+    return out
+
+
+def test_contact_estimate_reproduces_the_slow_ramp_result():
+    # 2026-09-23, 10 fresh smooth-PEI points, 0.15mm/s verify ramp: the
+    # prototype measured median per-point sd 2.02um over the 9 points it
+    # could score ((85,25) has no falling axis).  Skipped without the corpus.
+    groups = _manifest_groups('probe_traces_2026-09-23b', 'fresh_run_manifest.json', 'slow')
+    if not groups:
+        return
+    sds = []
+    for probes in groups.values():
+        vals = [r['z'] for r in (contact_estimate(p, 0.10, 15.) for p in probes) if r]
+        if len(vals) >= 3:
+            sds.append(float(np.std(vals, ddof=1)) * 1e3)
+    assert len(sds) == 9, len(sds)
+    assert float(np.median(sds)) <= 2.2, sorted(sds)
+
+
 if __name__ == '__main__':
     fails = 0
     for name, fn in sorted(globals().items()):
