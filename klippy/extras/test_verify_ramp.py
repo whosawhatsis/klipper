@@ -233,6 +233,132 @@ def test_contact_header_matches_the_row_width():
     assert rp._CONTACT_HEADER.count(',') == row.count(','), (
         rp._CONTACT_HEADER, row)
 
+# --- _vmin_edge / _combine_axes: the measurement estimator -------------------
+# V-minimum anchor + half-way crossing on the rising (air) side, in log
+# amplitude, per axis per ramp.  The contact response is V-SHAPED on some axes -
+# it falls to a minimum and climbs back as the nozzle presses deeper - so any
+# level taken from the deepest samples is contaminated; the ramp's own minimum
+# is not.  EVERY axis is evaluated; _combine_axes lets the data decide which
+# ones are good witnesses rather than picking one in advance.
+vmin_edge = HaltingContactProbe._vmin_edge
+combine_axes = HaltingContactProbe._combine_axes
+
+
+def _v_ramp(edge=0.05, zmin=0.02, step=0.005, noise=0.):
+    """Down ramp: log-amplitude flat in air, linear fall to a minimum at
+    `zmin`, then a climb back as the press deepens."""
+    zs = np.round(np.arange(0.30, -0.10, -step), 4)
+    y = np.where(zs >= edge + 0.02, 7.0,
+        np.where(zs >= zmin, 7.0 - 0.4 * (edge + 0.02 - zs) / (edge + 0.02 - zmin),
+                 6.6 + 0.3 * (zmin - zs) / (zmin + 0.10)))
+    return zs, np.exp(y + RNG.normal(0., noise, len(zs)) if noise else y)
+
+
+def test_vmin_edge_reads_the_half_way_crossing_above_the_minimum():
+    zs, amps = _v_ramp()
+    # air 7.0, min 6.6 -> half 6.8, reached half-way down the 0.02..0.07 flank
+    edge, step, _ = vmin_edge(zs, amps, 0.10)
+    assert abs(edge - 0.045) <= 0.003, edge
+    assert abs(step - 0.4) <= 0.03, step   # moving median rounds the tip
+
+
+def test_vmin_edge_ignores_the_deep_climb_back():
+    # The climb back reaches ABOVE half (6.9 > 6.8) - a crossing search from
+    # the deep end would find that first; the V anchor must not.
+    zs, amps = _v_ramp()
+    assert vmin_edge(zs, amps, 0.10)[0] > 0.02
+
+
+def test_vmin_edge_rejects_an_air_only_ramp():
+    # 2026-09-22 (60,60) false halts: ramps entirely in air stepped 0.01-0.06
+    # log units against 0.28-0.36 for real contacts.
+    zs = np.round(np.arange(0.30, -0.10, -0.005), 4)
+    amps = np.exp(7.0 + 0.02 * np.sin(zs * 300.))
+    assert vmin_edge(zs, amps, 0.10) is None
+
+
+def test_vmin_edge_does_not_depend_on_sample_order():
+    zs, amps = _v_ramp()
+    perm = RNG.permutation(len(zs))
+    assert abs(vmin_edge(zs[perm], amps[perm], 0.10)[0]
+               - vmin_edge(zs, amps, 0.10)[0]) < 1e-12
+
+
+def test_combine_drops_a_noisy_axis_and_averages_the_rest():
+    # (edge, step, noise) per axis per rep.  y has a big step but air noise
+    # like the measured accel y (step/noise ~4) - it must not vote.
+    good_x = (0.050, 0.30, 0.005)
+    good_z = (0.052, 0.32, 0.012)
+    noisy_y = (0.300, 0.53, 0.093)
+    ramps = [[good_x, noisy_y, good_z], [good_x, noisy_y, good_z]]
+    assert np.allclose(combine_axes(ramps, 10.), [0.051, 0.051])
+
+
+def test_combine_needs_an_axis_to_pass_on_every_rep():
+    # An axis that drops in and out changes the MIX, and each axis crosses at
+    # its own height - so a part-time witness moves the answer between probes.
+    x = (0.050, 0.30, 0.005)
+    z = (0.070, 0.32, 0.012)
+    assert combine_axes([[x, None, z], [x, None, None]], 10.) == [0.050, 0.050]
+
+
+def test_combine_reports_nothing_when_no_axis_is_good():
+    assert combine_axes([[None, (0.3, 0.53, 0.093), None]], 10.) == []
+    assert combine_axes([], 10.) == []
+
+
+def _corpus_down_ramps():
+    """112.7Hz textured-PEI verify captures, 2026-09-22 -> {(x,y): [probe]},
+    each probe a list over reps of [(zs, amps) per axis].  {} if absent."""
+    import os, glob, collections
+    d = os.path.join(os.path.dirname(__file__), '..', '..',
+                     'probe_traces_2026-09-21')
+    out = collections.defaultdict(list)
+    for f in sorted(glob.glob(os.path.join(d, 'verify*.csv'))):
+        head = open(f).read(400)
+        if 'freq=112.70' not in head or 'textured' not in head:
+            continue
+        xy = head.split('# x=')[1].split('\n')[0]
+        cols, rows = None, []
+        for ln in open(f):
+            if ln.startswith('#'):
+                continue
+            p = ln.strip().split(',')
+            if cols is None:
+                cols = p
+            elif len(p) == len(cols) and p[2] == 'down':
+                rows.append(p)
+        ai = [cols.index(c) for c in ('amp_x', 'amp_y', 'amp_z')]
+        probe = []
+        for rep in sorted(set(r[3] for r in rows)):
+            r = [x for x in rows if x[3] == rep]
+            zs = [float(x[0]) for x in r]
+            probe.append([(zs, [float(x[i]) for x in r]) for i in ai])
+        out[xy].append(probe)
+    return out
+
+
+def test_all_axes_reproduce_the_measured_repeatability():
+    # Offline on this corpus the rule scored 1.40-3.25um at five of six
+    # points; (30,70) is a known plate defect (11.7um on every estimator).
+    # Median across points must hold at or under 3.5um.
+    corpus = _corpus_down_ramps()
+    if not corpus:
+        return
+    sds = []
+    for xy, probes in corpus.items():
+        vals = []
+        for probe in probes:
+            v = combine_axes([[vmin_edge(zs, a, 0.10) for zs, a in rep]
+                              for rep in probe], 10.)
+            if v:
+                vals.append(np.mean(v))
+        if len(vals) > 1:
+            sds.append(float(np.std(vals, ddof=1)) * 1e3)
+    assert len(sds) == 6, sds
+    assert float(np.median(sds)) <= 3.5, sorted(sds)
+
+
 if __name__ == '__main__':
     fails = 0
     for name, fn in sorted(globals().items()):
