@@ -1,0 +1,98 @@
+[
+ {
+  "x": 75,
+  "y": 85,
+  "arm": "slow",
+  "speed": 0.15,
+  "files": [
+   "verify00514.csv",
+   "verify00515.csv",
+   "verify00516.csv",
+   "verify00517.csv",
+   "verify00518.csv",
+   "verify00519.csv",
+   "verify00520.csv"
+  ],
+  "result": "ok"
+ },
+ {
+  "x": 75,
+  "y": 85,
+  "arm": "ctrl",
+  "speed": 0.3,
+  "files": [
+   "verify00521.csv",
+   "verify00522.csv",
+   "verify00523.csv",
+   "verify00524.csv",
+   "verify00525.csv",
+   "verify00526.csv",
+   "verify00527.csv"
+  ],
+  "result": "ok"
+ },
+ {
+  "x": 90,
+  "y": 70,
+  "arm": "ctrl",
+  "speed": 0.3,
+  "files": [
+   "verify00528.csv",
+   "verify00529.csv",
+   "verify00530.csv",
+   "verify00531.csv",
+   "verify00532.csv",
+   "verify00533.csv",
+   "verify00534.csv"
+  ],
+  "result": "ok"
+ },
+ {
+  "x": 90,
+  "y": 70,
+  "arm": "slow",
+  "speed": 0.15,
+  "files": [
+   "verify00535.csv",
+   "verify00536.csv",
+   "verify00537.csv",
+   "verify00538.csv",
+   "verify00539.csv",
+   "verify00540.csv",
+   "verify00541.csv"
+  ],
+  "result": "ok"
+ },
+ {
+  "x": 60,
+  "y": 45,
+  "arm": "slow",
+  "speed": 0.15,
+  "files": [
+   "verify00542.csv",
+   "verify00543.csv",
+   "verify00544.csv",
+   "verify00545.csv",
+   "verify00546.csv",
+   "verify00547.csv",
+   "verify00548.csv"
+  ],
+  "result": "ok"
+ },
+ {
+  "x": 60,
+  "y": 45,
+  "arm": "ctrl",
+  "speed": 0.3,
+  "files": [
+   "verify00549.csv",
+   "verify00550.csv",
+   "verify00551.csv",
+   "verify00552.csv",
+   "verify00553.csv",
+   "verify00554.csv",
+   "verify00555.csv"
+  ],
+  "result": "ok"
+ }
+]
