@@ -256,3 +256,11 @@
     selfcheck a800ded0e2edbaba1c52dc988c3a2708  test_air_guard.py
     selfcheck 89876ec761b72aabd557a8ba44d40021  test_verify_verdict.py
     selfcheck 7f170cd7cc1dc16879e4b82f7b5d8abf  test_rank_pairs.py
+2026-09-22T22:59:32-0700  e5bfdf8db092db6e1b2ccab875677c10c3fea087  resonance-nozzle-probe-tooling@e5bfdf8db  host=who@192.168.4.183
+    test_verify_ramp: fade semantics, 13-group corpus regression (<=2.2um)
+    selfcheck eb232b510b55af448e6a5c8f7a761ab0  test_resonance_moving_stats.py
+    selfcheck 69fd24d956c6ed942c677791a2873521  test_analog_contact.py
+    selfcheck a3c82abcb41840039e9b30e0d0317a77  test_verify_ramp.py
+    selfcheck a800ded0e2edbaba1c52dc988c3a2708  test_air_guard.py
+    selfcheck 89876ec761b72aabd557a8ba44d40021  test_verify_verdict.py
+    selfcheck 7f170cd7cc1dc16879e4b82f7b5d8abf  test_rank_pairs.py
