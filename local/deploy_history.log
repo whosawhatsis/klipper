@@ -1,0 +1,250 @@
+2026-08-07T17:10:33-0700  4bcff57d08d607f900adb482ed7b83f4c5ef601c  resonance-nozzle-probe@4bcff57d0  host=who@192.168.4.166
+    resonance_probe: stop tracking the probe self-checks
+    selfcheck eb232b510b55af448e6a5c8f7a761ab0  test_resonance_moving_stats.py
+    selfcheck 69fd24d956c6ed942c677791a2873521  test_analog_contact.py
+    selfcheck bc0b4f9939dd6ee75527feef7b3fee8f  test_verify_ramp.py
+    selfcheck a800ded0e2edbaba1c52dc988c3a2708  test_air_guard.py
+    selfcheck 41e434ea1573c8df29020390630657f9  test_verify_verdict.py
+2026-08-07T17:24:57-0700  f65a854e8520e68d62d89289e057ee5dcdf8efb9  resonance-nozzle-probe@f65a854e8  host=who@192.168.4.166
+    resonance_probe: do not attempt a descent that cannot measure
+    selfcheck eb232b510b55af448e6a5c8f7a761ab0  test_resonance_moving_stats.py
+    selfcheck 69fd24d956c6ed942c677791a2873521  test_analog_contact.py
+    selfcheck bc0b4f9939dd6ee75527feef7b3fee8f  test_verify_ramp.py
+    selfcheck a800ded0e2edbaba1c52dc988c3a2708  test_air_guard.py
+    selfcheck 087d0f05b926e9aabd0d53a2fbd42235  test_verify_verdict.py
+2026-08-07T20:02:19-0700  1a02b1bf6bb6fb6c01bd5f17549ce001f220cb15  resonance-nozzle-probe@1a02b1bf6  host=who@192.168.4.183
+    resonance_probe: key confirmed contacts by frequency, and never re-arm below one
+    selfcheck eb232b510b55af448e6a5c8f7a761ab0  test_resonance_moving_stats.py
+    selfcheck 69fd24d956c6ed942c677791a2873521  test_analog_contact.py
+    selfcheck bc0b4f9939dd6ee75527feef7b3fee8f  test_verify_ramp.py
+    selfcheck a800ded0e2edbaba1c52dc988c3a2708  test_air_guard.py
+    selfcheck 8f889078a2ac669e210721c57d7ce87a  test_verify_verdict.py
+2026-08-07T20:09:37-0700  315581dc4165d56de3901ed1eb6e01f1897cb9ba  resonance-nozzle-probe@315581dc4  host=who@192.168.4.183
+    resonance_probe_calibrate: fix the ranked-mode tuple arity that killed RANK_FREQ
+    selfcheck eb232b510b55af448e6a5c8f7a761ab0  test_resonance_moving_stats.py
+    selfcheck 69fd24d956c6ed942c677791a2873521  test_analog_contact.py
+    selfcheck bc0b4f9939dd6ee75527feef7b3fee8f  test_verify_ramp.py
+    selfcheck a800ded0e2edbaba1c52dc988c3a2708  test_air_guard.py
+    selfcheck 8f889078a2ac669e210721c57d7ce87a  test_verify_verdict.py
+2026-08-07T20:49:07-0700  888716094d98bd7624c2573c2c0a60e4f9b033df  resonance-nozzle-probe@888716094  host=who@192.168.4.183
+    resonance_probe: an exhausted re-arm is a failed descent, not a hard error
+    selfcheck eb232b510b55af448e6a5c8f7a761ab0  test_resonance_moving_stats.py
+    selfcheck 69fd24d956c6ed942c677791a2873521  test_analog_contact.py
+    selfcheck bc0b4f9939dd6ee75527feef7b3fee8f  test_verify_ramp.py
+    selfcheck a800ded0e2edbaba1c52dc988c3a2708  test_air_guard.py
+    selfcheck 8f889078a2ac669e210721c57d7ce87a  test_verify_verdict.py
+2026-08-08T15:04:38-0700  f82379a37957c4a7820f43aaa3da46c325ef8739  resonance-nozzle-probe@f82379a37  host=who@192.168.4.183
+    resonance_probe: key the air-level history by frequency too
+    selfcheck eb232b510b55af448e6a5c8f7a761ab0  test_resonance_moving_stats.py
+    selfcheck 69fd24d956c6ed942c677791a2873521  test_analog_contact.py
+    selfcheck bc0b4f9939dd6ee75527feef7b3fee8f  test_verify_ramp.py
+    selfcheck a800ded0e2edbaba1c52dc988c3a2708  test_air_guard.py
+    selfcheck 8f889078a2ac669e210721c57d7ce87a  test_verify_verdict.py
+2026-08-08T16:38:11-0700  ecc383fae2306f77619e88b06fc82d7f29bd2860  resonance-nozzle-probe@ecc383fae  host=who@192.168.4.183
+    resonance_probe_calibrate: the plate is fixed during a calibration
+    selfcheck eb232b510b55af448e6a5c8f7a761ab0  test_resonance_moving_stats.py
+    selfcheck 69fd24d956c6ed942c677791a2873521  test_analog_contact.py
+    selfcheck bc0b4f9939dd6ee75527feef7b3fee8f  test_verify_ramp.py
+    selfcheck a800ded0e2edbaba1c52dc988c3a2708  test_air_guard.py
+    selfcheck 8f889078a2ac669e210721c57d7ce87a  test_verify_verdict.py
+    selfcheck f350940ea3af9f440c99dda3366500b9  test_rank_pairs.py
+2026-08-08T23:02:30-0700  67814c800613be33b3257fda95dc43330f4591f8  resonance-nozzle-probe@67814c800  host=who@192.168.4.183
+    resonance_probe: verify ramps get a real look-ahead buffer
+    selfcheck eb232b510b55af448e6a5c8f7a761ab0  test_resonance_moving_stats.py
+    selfcheck 69fd24d956c6ed942c677791a2873521  test_analog_contact.py
+    selfcheck bc0b4f9939dd6ee75527feef7b3fee8f  test_verify_ramp.py
+    selfcheck a800ded0e2edbaba1c52dc988c3a2708  test_air_guard.py
+    selfcheck 8f889078a2ac669e210721c57d7ce87a  test_verify_verdict.py
+    selfcheck 398e3ab226eee3f25db56ac5f495effd  test_rank_pairs.py
+2026-08-09T00:11:09-0700  7a9f621403466bff5726a9b98803f11fc8cbb035  resonance-nozzle-probe@7a9f62140  host=who@192.168.4.183
+    resonance_probe: detect shallow overshoot from the edge position
+    selfcheck eb232b510b55af448e6a5c8f7a761ab0  test_resonance_moving_stats.py
+    selfcheck 69fd24d956c6ed942c677791a2873521  test_analog_contact.py
+    selfcheck bc0b4f9939dd6ee75527feef7b3fee8f  test_verify_ramp.py
+    selfcheck a800ded0e2edbaba1c52dc988c3a2708  test_air_guard.py
+    selfcheck e415fee4241cec312d7b932504369e4b  test_verify_verdict.py
+    selfcheck 398e3ab226eee3f25db56ac5f495effd  test_rank_pairs.py
+2026-08-09T00:15:04-0700  cc1e5b074636ec97c9ae6a90dd8e8c71ef57a2e3  resonance-nozzle-probe@cc1e5b074  host=who@192.168.4.183
+    resonance_probe: fix AXIS_COUNT lookup that shut the printer down
+    selfcheck eb232b510b55af448e6a5c8f7a761ab0  test_resonance_moving_stats.py
+    selfcheck 69fd24d956c6ed942c677791a2873521  test_analog_contact.py
+    selfcheck bc0b4f9939dd6ee75527feef7b3fee8f  test_verify_ramp.py
+    selfcheck a800ded0e2edbaba1c52dc988c3a2708  test_air_guard.py
+    selfcheck e415fee4241cec312d7b932504369e4b  test_verify_verdict.py
+    selfcheck 398e3ab226eee3f25db56ac5f495effd  test_rank_pairs.py
+2026-08-09T00:35:17-0700  f045cca6727f3478ae80a69d672fe4ce03f56aed  resonance-nozzle-probe@f045cca67  host=who@192.168.4.183
+    resonance_probe: refine from the UP ramp only
+    selfcheck eb232b510b55af448e6a5c8f7a761ab0  test_resonance_moving_stats.py
+    selfcheck 69fd24d956c6ed942c677791a2873521  test_analog_contact.py
+    selfcheck bc0b4f9939dd6ee75527feef7b3fee8f  test_verify_ramp.py
+    selfcheck a800ded0e2edbaba1c52dc988c3a2708  test_air_guard.py
+    selfcheck e415fee4241cec312d7b932504369e4b  test_verify_verdict.py
+    selfcheck 398e3ab226eee3f25db56ac5f495effd  test_rank_pairs.py
+2026-08-09T01:01:39-0700  08072fee7d8a3db871c042258a4cc84161616b8c  resonance-nozzle-probe@08072fee7  host=who@192.168.4.183
+    resonance_probe: ledger both ramp estimates for every accepted contact
+    selfcheck eb232b510b55af448e6a5c8f7a761ab0  test_resonance_moving_stats.py
+    selfcheck 69fd24d956c6ed942c677791a2873521  test_analog_contact.py
+    selfcheck bc0b4f9939dd6ee75527feef7b3fee8f  test_verify_ramp.py
+    selfcheck a800ded0e2edbaba1c52dc988c3a2708  test_air_guard.py
+    selfcheck e415fee4241cec312d7b932504369e4b  test_verify_verdict.py
+    selfcheck 398e3ab226eee3f25db56ac5f495effd  test_rank_pairs.py
+2026-08-09T14:52:18-0700  3fc6e5e71638d36227d08870b34c2508957a313e  resonance-nozzle-probe@3fc6e5e71  host=who@192.168.4.183
+    resonance_probe: read contact from the ramp minimum, not the dwell
+    selfcheck eb232b510b55af448e6a5c8f7a761ab0  test_resonance_moving_stats.py
+    selfcheck 69fd24d956c6ed942c677791a2873521  test_analog_contact.py
+    selfcheck bc0b4f9939dd6ee75527feef7b3fee8f  test_verify_ramp.py
+    selfcheck a800ded0e2edbaba1c52dc988c3a2708  test_air_guard.py
+    selfcheck bf3063098cbab770906864d77541a206  test_verify_verdict.py
+    selfcheck 398e3ab226eee3f25db56ac5f495effd  test_rank_pairs.py
+2026-08-09T15:34:49-0700  4115fe52972907e7f82f4a71e2111056baeef4f8  resonance-nozzle-probe@4115fe529  host=who@192.168.4.183
+    resonance_probe: record XY in the verify trace header
+    selfcheck eb232b510b55af448e6a5c8f7a761ab0  test_resonance_moving_stats.py
+    selfcheck 69fd24d956c6ed942c677791a2873521  test_analog_contact.py
+    selfcheck bc0b4f9939dd6ee75527feef7b3fee8f  test_verify_ramp.py
+    selfcheck a800ded0e2edbaba1c52dc988c3a2708  test_air_guard.py
+    selfcheck bf3063098cbab770906864d77541a206  test_verify_verdict.py
+    selfcheck 398e3ab226eee3f25db56ac5f495effd  test_rank_pairs.py
+2026-08-09T17:42:46-0700  bd93a37ab3f18137e2d7d6b1545d7954f21b9e0d  resonance-nozzle-probe@bd93a37ab  host=who@192.168.4.183
+    resonance_probe: restore _measure_response_at, used by the stepwise mode
+    selfcheck eb232b510b55af448e6a5c8f7a761ab0  test_resonance_moving_stats.py
+    selfcheck 69fd24d956c6ed942c677791a2873521  test_analog_contact.py
+    selfcheck bc0b4f9939dd6ee75527feef7b3fee8f  test_verify_ramp.py
+    selfcheck a800ded0e2edbaba1c52dc988c3a2708  test_air_guard.py
+    selfcheck bf3063098cbab770906864d77541a206  test_verify_verdict.py
+    selfcheck 398e3ab226eee3f25db56ac5f495effd  test_rank_pairs.py
+2026-08-09T17:49:43-0700  162c6af7ec286bb9efe2f24a7688c539ef879ddc  resonance-nozzle-probe@162c6af7e  host=who@192.168.4.183
+    resonance_probe: the actual probing path had the shallowest drip buffer
+    selfcheck eb232b510b55af448e6a5c8f7a761ab0  test_resonance_moving_stats.py
+    selfcheck 69fd24d956c6ed942c677791a2873521  test_analog_contact.py
+    selfcheck bc0b4f9939dd6ee75527feef7b3fee8f  test_verify_ramp.py
+    selfcheck a800ded0e2edbaba1c52dc988c3a2708  test_air_guard.py
+    selfcheck bf3063098cbab770906864d77541a206  test_verify_verdict.py
+    selfcheck 398e3ab226eee3f25db56ac5f495effd  test_rank_pairs.py
+2026-08-09T18:12:05-0700  12e071993dd372303aa15b4e3271b374e6fcbb16  resonance-nozzle-probe@12e071993  host=who@192.168.4.183
+    resonance_probe: characterisation measured above the damping cliff
+    selfcheck eb232b510b55af448e6a5c8f7a761ab0  test_resonance_moving_stats.py
+    selfcheck 69fd24d956c6ed942c677791a2873521  test_analog_contact.py
+    selfcheck bc0b4f9939dd6ee75527feef7b3fee8f  test_verify_ramp.py
+    selfcheck a800ded0e2edbaba1c52dc988c3a2708  test_air_guard.py
+    selfcheck bf3063098cbab770906864d77541a206  test_verify_verdict.py
+    selfcheck 398e3ab226eee3f25db56ac5f495effd  test_rank_pairs.py
+2026-08-09T18:16:47-0700  7662a152dcc230393a41df2c7025dbe05e477e17  resonance-nozzle-probe@7662a152d  host=who@192.168.4.183
+    resonance_probe_calibrate: the AIR reference was inside the contact transition
+    selfcheck eb232b510b55af448e6a5c8f7a761ab0  test_resonance_moving_stats.py
+    selfcheck 69fd24d956c6ed942c677791a2873521  test_analog_contact.py
+    selfcheck bc0b4f9939dd6ee75527feef7b3fee8f  test_verify_ramp.py
+    selfcheck a800ded0e2edbaba1c52dc988c3a2708  test_air_guard.py
+    selfcheck bf3063098cbab770906864d77541a206  test_verify_verdict.py
+    selfcheck 398e3ab226eee3f25db56ac5f495effd  test_rank_pairs.py
+2026-08-09T18:24:23-0700  2b560b8bedb34a565311e7f0a80e5ba8e42305fd  resonance-nozzle-probe@2b560b8be  host=who@192.168.4.183
+    resonance_probe_calibrate: clamp the contact dwell to the room available
+    selfcheck eb232b510b55af448e6a5c8f7a761ab0  test_resonance_moving_stats.py
+    selfcheck 69fd24d956c6ed942c677791a2873521  test_analog_contact.py
+    selfcheck bc0b4f9939dd6ee75527feef7b3fee8f  test_verify_ramp.py
+    selfcheck a800ded0e2edbaba1c52dc988c3a2708  test_air_guard.py
+    selfcheck bf3063098cbab770906864d77541a206  test_verify_verdict.py
+    selfcheck 398e3ab226eee3f25db56ac5f495effd  test_rank_pairs.py
+2026-08-09T18:44:04-0700  ccfb109a9ebe699aa4b7a8610d4baf5304ff9aa6  resonance-nozzle-probe@ccfb109a9  host=who@192.168.4.183
+    resonance_probe: one shared contact-measurement surface
+    selfcheck eb232b510b55af448e6a5c8f7a761ab0  test_resonance_moving_stats.py
+    selfcheck 69fd24d956c6ed942c677791a2873521  test_analog_contact.py
+    selfcheck bc0b4f9939dd6ee75527feef7b3fee8f  test_verify_ramp.py
+    selfcheck a800ded0e2edbaba1c52dc988c3a2708  test_air_guard.py
+    selfcheck 86b92900e10c84a01a0bfb0ac07fa5a8  test_verify_verdict.py
+    selfcheck 398e3ab226eee3f25db56ac5f495effd  test_rank_pairs.py
+2026-09-13T10:24:24-0700  651a5b25e1d781d3c36214184bd60ad6b32c9fea  resonance-nozzle-probe@651a5b25e  host=who@zer0.local
+    resonance_probe_calibrate: consistency-scored interleaved mode selection
+    selfcheck eb232b510b55af448e6a5c8f7a761ab0  test_resonance_moving_stats.py
+    selfcheck 69fd24d956c6ed942c677791a2873521  test_analog_contact.py
+    selfcheck bc0b4f9939dd6ee75527feef7b3fee8f  test_verify_ramp.py
+    selfcheck a800ded0e2edbaba1c52dc988c3a2708  test_air_guard.py
+    selfcheck abce8a66c7af9e0896af7dd96ea71484  test_verify_verdict.py
+    selfcheck 82f70f99a53510c6871fdf9322869200  test_rank_pairs.py
+2026-09-13T10:40:54-0700  47ebbe84c6fe38f4c810ebde525703e72eb030f4  resonance-nozzle-probe@47ebbe84c  host=who@zer0.local
+    resonance_probe_calibrate: start descents from START_Z, refuse tall vibrations
+    selfcheck eb232b510b55af448e6a5c8f7a761ab0  test_resonance_moving_stats.py
+    selfcheck 69fd24d956c6ed942c677791a2873521  test_analog_contact.py
+    selfcheck bc0b4f9939dd6ee75527feef7b3fee8f  test_verify_ramp.py
+    selfcheck a800ded0e2edbaba1c52dc988c3a2708  test_air_guard.py
+    selfcheck 1cca99bf99282803c8d1bbe3228ca9f0  test_verify_verdict.py
+    selfcheck 82f70f99a53510c6871fdf9322869200  test_rank_pairs.py
+2026-09-13T20:28:24-0700  35e4567c76f6ce372531f378f952a9c81005652b  resonance-nozzle-probe@35e4567c7  host=who@100.123.190.58
+    resonance_probe_calibrate: false halts and salvages cost score, heights compare raw
+    selfcheck eb232b510b55af448e6a5c8f7a761ab0  test_resonance_moving_stats.py
+    selfcheck 69fd24d956c6ed942c677791a2873521  test_analog_contact.py
+    selfcheck bc0b4f9939dd6ee75527feef7b3fee8f  test_verify_ramp.py
+    selfcheck a800ded0e2edbaba1c52dc988c3a2708  test_air_guard.py
+    selfcheck 1cca99bf99282803c8d1bbe3228ca9f0  test_verify_verdict.py
+    selfcheck c28cdc0ff64d081e7b4bb1a2f94f80c0  test_rank_pairs.py
+2026-09-14T11:19:45-0700  bea4ace26604d1dcde60be1b198a965194dbe626  resonance-nozzle-probe@bea4ace26  host=who@100.123.190.58
+    resonance_probe: arm on actual Z crossing, refine on step-history Z
+    selfcheck eb232b510b55af448e6a5c8f7a761ab0  test_resonance_moving_stats.py
+    selfcheck 69fd24d956c6ed942c677791a2873521  test_analog_contact.py
+    selfcheck bc0b4f9939dd6ee75527feef7b3fee8f  test_verify_ramp.py
+    selfcheck a800ded0e2edbaba1c52dc988c3a2708  test_air_guard.py
+    selfcheck 404e03dcb9bcb4fc55064118691d1b12  test_verify_verdict.py
+    selfcheck c28cdc0ff64d081e7b4bb1a2f94f80c0  test_rank_pairs.py
+2026-09-15T10:58:42-0700  d12bd59dbfcb42745535a1b8bb8538214aa04a10  resonance-nozzle-probe@d12bd59db  host=who@100.123.190.58
+    resonance_probe: verify up edge is the crossing nearest air
+    selfcheck eb232b510b55af448e6a5c8f7a761ab0  test_resonance_moving_stats.py
+    selfcheck 69fd24d956c6ed942c677791a2873521  test_analog_contact.py
+    selfcheck cb47758a17b74490958a56e6b50adf10  test_verify_ramp.py
+    selfcheck a800ded0e2edbaba1c52dc988c3a2708  test_air_guard.py
+    selfcheck 404e03dcb9bcb4fc55064118691d1b12  test_verify_verdict.py
+    selfcheck c28cdc0ff64d081e7b4bb1a2f94f80c0  test_rank_pairs.py
+2026-09-15T11:38:53-0700  56f4ff50235506b11f0ee18827a2c30f4baae098  resonance-nozzle-probe@56f4ff502  host=who@100.123.190.58
+    resonance_probe: gradient halt test off by default (halt_gradient)
+    selfcheck eb232b510b55af448e6a5c8f7a761ab0  test_resonance_moving_stats.py
+    selfcheck 69fd24d956c6ed942c677791a2873521  test_analog_contact.py
+    selfcheck cb47758a17b74490958a56e6b50adf10  test_verify_ramp.py
+    selfcheck a800ded0e2edbaba1c52dc988c3a2708  test_air_guard.py
+    selfcheck 89876ec761b72aabd557a8ba44d40021  test_verify_verdict.py
+    selfcheck c28cdc0ff64d081e7b4bb1a2f94f80c0  test_rank_pairs.py
+2026-09-21T12:19:55-0700  56b6d09ce48e4dde894bd5a0f32d697cff8824d3  resonance-nozzle-probe@56b6d09ce  host=who@192.168.4.183
+    resonance_probe: calibration helper inherited 1.0mm/s, so it could never halt
+    selfcheck eb232b510b55af448e6a5c8f7a761ab0  test_resonance_moving_stats.py
+    selfcheck 69fd24d956c6ed942c677791a2873521  test_analog_contact.py
+    selfcheck cb47758a17b74490958a56e6b50adf10  test_verify_ramp.py
+    selfcheck a800ded0e2edbaba1c52dc988c3a2708  test_air_guard.py
+    selfcheck 89876ec761b72aabd557a8ba44d40021  test_verify_verdict.py
+    selfcheck c28cdc0ff64d081e7b4bb1a2f94f80c0  test_rank_pairs.py
+2026-09-21T12:25:03-0700  94d073c8f565087442968a31680c1511f9757351  resonance-nozzle-probe@94d073c8f  host=who@192.168.4.183
+    Revert "resonance_probe: calibration helper inherited 1.0mm/s"
+    selfcheck eb232b510b55af448e6a5c8f7a761ab0  test_resonance_moving_stats.py
+    selfcheck 69fd24d956c6ed942c677791a2873521  test_analog_contact.py
+    selfcheck cb47758a17b74490958a56e6b50adf10  test_verify_ramp.py
+    selfcheck a800ded0e2edbaba1c52dc988c3a2708  test_air_guard.py
+    selfcheck 89876ec761b72aabd557a8ba44d40021  test_verify_verdict.py
+    selfcheck c28cdc0ff64d081e7b4bb1a2f94f80c0  test_rank_pairs.py
+2026-09-21T12:47:06-0700  4f46fa9e0afb2b9ba0468c845eba47b627e9f3de  resonance-nozzle-probe@4f46fa9e0  host=who@192.168.4.183
+    resonance_probe_calibrate: a salvaged find must not vote on bed height
+    selfcheck eb232b510b55af448e6a5c8f7a761ab0  test_resonance_moving_stats.py
+    selfcheck 69fd24d956c6ed942c677791a2873521  test_analog_contact.py
+    selfcheck cb47758a17b74490958a56e6b50adf10  test_verify_ramp.py
+    selfcheck a800ded0e2edbaba1c52dc988c3a2708  test_air_guard.py
+    selfcheck 89876ec761b72aabd557a8ba44d40021  test_verify_verdict.py
+    selfcheck 7f170cd7cc1dc16879e4b82f7b5d8abf  test_rank_pairs.py
+2026-09-21T17:50:42-0700  d4dabbc4a26fd542159cf41e13f4feab0272b8a1  resonance-nozzle-probe@d4dabbc4a  host=who@192.168.4.183
+    resonance_probe: verify autosave kept only one of three axes
+    selfcheck eb232b510b55af448e6a5c8f7a761ab0  test_resonance_moving_stats.py
+    selfcheck 69fd24d956c6ed942c677791a2873521  test_analog_contact.py
+    selfcheck 834f4445038459054e73022a75933ea1  test_verify_ramp.py
+    selfcheck a800ded0e2edbaba1c52dc988c3a2708  test_air_guard.py
+    selfcheck 89876ec761b72aabd557a8ba44d40021  test_verify_verdict.py
+    selfcheck 7f170cd7cc1dc16879e4b82f7b5d8abf  test_rank_pairs.py
+2026-09-21T21:15:43-0700  5e7360418b4eadf3c870920b2e182a75fc729bf0  resonance-nozzle-probe@5e7360418  host=who@192.168.4.183
+    resonance_probe: VERIFY_DWELL's flat lower bound is wrong at low frequency
+    selfcheck eb232b510b55af448e6a5c8f7a761ab0  test_resonance_moving_stats.py
+    selfcheck 69fd24d956c6ed942c677791a2873521  test_analog_contact.py
+    selfcheck eb00400cc05641f4e2b2c267f2ddfc60  test_verify_ramp.py
+    selfcheck a800ded0e2edbaba1c52dc988c3a2708  test_air_guard.py
+    selfcheck 89876ec761b72aabd557a8ba44d40021  test_verify_verdict.py
+    selfcheck 7f170cd7cc1dc16879e4b82f7b5d8abf  test_rank_pairs.py
+2026-09-21T22:15:41-0700  b5757f04a5a8988e1b5ddf34f3b14e7a529e69e3  resonance-nozzle-probe@b5757f04a  host=who@192.168.4.183
+    resonance_probe: the contact ledger could not name its own capture
+    selfcheck eb232b510b55af448e6a5c8f7a761ab0  test_resonance_moving_stats.py
+    selfcheck 69fd24d956c6ed942c677791a2873521  test_analog_contact.py
+    selfcheck 68521f97c592854b2f67b9f9e4fad5b3  test_verify_ramp.py
+    selfcheck a800ded0e2edbaba1c52dc988c3a2708  test_air_guard.py
+    selfcheck 89876ec761b72aabd557a8ba44d40021  test_verify_verdict.py
+    selfcheck 7f170cd7cc1dc16879e4b82f7b5d8abf  test_rank_pairs.py
