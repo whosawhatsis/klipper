@@ -46,3 +46,14 @@ offset jumps. `eval_fixed.py`: choose the anchor ONCE per point (lowest median p
 2.35um median / 2.43um mean (x alone 2.67 / 2.90); + all guided helpers inverse-variance 2.13 / 2.46;
 + only the second-best guided 2.35 / 2.51. Per-point choice uses the scored data (mild selection
 bias); in-tree it would be made at CALIBRATE time from separate probes.
+
+## Stateless: anchor chosen per verify CALL (user constraint, 2026-09-23)
+
+No state across probes; choosing once per verify/refine call, and one inverse-variance average over
+every axis x down-ramp fit in the call, are allowed. `eval_call.py`: B (one IVW over the call,
+anchor = lowest median predicted sigma over the call's ramps) 2.44um median / 3.15um mean (x alone
+2.67 / 2.90). The mean is one call anchoring on z's later fall at (60,45) (11.4um); the
+first-departure rule fixes that (1.73um) but breaks (90,70) run 1 (2.08 -> 5.14um, z's own knee sits
+above x there) -> 2.44 / 2.68. `eval_consist.py`: choosing the anchor by how well the other axes
+confirm it is WORSE (4.53um mean) - guided fits search +-15um around any anchor, so confirmation is
+circular. Ceiling with a stable anchor (fixed per point): 2.11 / 2.47.
