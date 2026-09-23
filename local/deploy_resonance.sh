@@ -29,6 +29,8 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 MODULES="resonance_probe.py resonance_probe_calibrate.py analog_contact.py"
 TESTS="test_resonance_moving_stats.py test_analog_contact.py test_verify_ramp.py test_air_guard.py test_verify_verdict.py test_rank_pairs.py"
 DEPLOY_LOG="$ROOT/local/deploy_history.log"
+# macOS has md5 -q; Linux (debian) has md5sum.
+command -v md5 >/dev/null || md5() { md5sum "$2" | cut -d" " -f1; }
 
 echo "== commit check =="
 DIRTY=$(git -C "$ROOT" status --porcelain -- klippy/extras docs)   # excludes the untracked self-checks
