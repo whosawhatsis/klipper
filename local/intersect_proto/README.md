@@ -35,3 +35,14 @@ median 2.88um, mean(excl 30,70) 2.66um vs x alone 2.67 / 2.90. Helps (75,85) 5.7
 (90,70) run 1 1.20->4.52um. Helper knees sit +1.5..+1.9um from the anchor (IQR 7-9um).
 Slope drift: |r(slope, probe order)| > 0.5 in 12/16 groups (chance ~4), sign split 6/6; slope vs
 x air amplitude has no consistent sign (median r +0.22; amplitude varied only 1-5%).
+
+## Choosing the anchor axis (2026-09-23)
+
+`quality.py`: predicted knee sigma = sqrt((sd/s)^2 + (d*se_slope/s)^2 + (se_air/s)^2), s = |slope - air slope|.
+CALIBRATED (predicted vs actual rep-to-rep: x 1.8/2.1um, z 3.1/3.6um). But picking the best axis
+PER RAMP from independent fits is worse than x alone (3.1-4.1um median): independent z knees sit a
+point-dependent -25..+43um from x's (z follows its bump/fall), so switching axes re-creates the
+offset jumps. `eval_fixed.py`: choose the anchor ONCE per point (lowest median predicted sigma) ->
+2.35um median / 2.43um mean (x alone 2.67 / 2.90); + all guided helpers inverse-variance 2.13 / 2.46;
++ only the second-best guided 2.35 / 2.51. Per-point choice uses the scored data (mild selection
+bias); in-tree it would be made at CALIBRATE time from separate probes.
