@@ -693,12 +693,12 @@ class ResonanceProbe:
                                             maxval=1)
         # All-axes V-minimum measurement (_vmin_edge/_combine_axes).  A ramp
         # must step at least verify_min_step log units to count as spanning
-        # contact, and an axis votes only at step/noise >= verify_min_snr on
-        # every rep.  Offline, the gate held 3.24um median at 10 and 4.1-4.5um
-        # at 6-14, so it is a real knob, not a free one.
+        # contact.  An axis's weight fades in from zero at step/noise =
+        # verify_min_snr to full at twice that; the result is flat in this
+        # knob (1.9-2.3um median anywhere from 5 to 20 over 13 groups).
         self.verify_min_step = config.getfloat('verify_min_step', 0.10,
                                                above=0.)
-        self.verify_min_snr = config.getfloat('verify_min_snr', 10., above=0.)
+        self.verify_min_snr = config.getfloat('verify_min_snr', 15., above=0.)
         # Second confirm criterion, OR'd with the ratio test, so it can only ADD
         # confirmations - never remove one.  DEFAULT OFF, because the only thing
         # it was ever measured to contribute was a false one: on 2026-08-06 it
@@ -1914,7 +1914,7 @@ class HaltingContactProbe:
         self._verify_reps = getattr(rp, 'verify_reps', 1) or 1
         self._verify_combine = getattr(rp, 'verify_combine', 0)
         self.verify_min_step = getattr(rp, 'verify_min_step', 0.10)
-        self.verify_min_snr = getattr(rp, 'verify_min_snr', 10.)
+        self.verify_min_snr = getattr(rp, 'verify_min_snr', 15.)
         # Read from the live config rather than hardcoded here - a literal that
         # shadows a configured value is a mistake this module has made before.
         self._verify_step_snr = getattr(rp, 'verify_step_snr', 0.)
@@ -2599,27 +2599,39 @@ class HaltingContactProbe:
 
     # Combine _vmin_edge results from EVERY axis of every rep of one direction
     # (ramps[rep][axis] = result or None).  No axis is picked in advance; the
-    # data decides.  An axis votes only if its step/noise >= min_snr on EVERY
-    # rep: each axis crosses at its own height, so a part-time witness shifts
-    # the mix - and the answer - from probe to probe.  Measured on 2026-09-22
-    # 112.7Hz captures: accel y had step/noise ~4 against x ~61 and z ~29, and
-    # its reps disagreed by 31um median against 1.5-1.9um for x and z.
-    # ponytail: plain mean of per-axis crossings, which leaks each axis's
-    # constant crossing offset whenever axes pass at some points and not others
-    # ((60,60) 10.5um vs 3.8um on x alone); per-axis offset calibration is the
-    # upgrade if that matters.
-    # Returns one edge per rep (the mean over the voting axes), so the caller's
+    # data decides.  Measured on 2026-09-22 112.7Hz captures: accel y had
+    # step/noise ~4 against x ~61 and z ~29, and its reps disagreed by 31um
+    # median against 1.5-1.9um for x and z - it must carry no weight.
+    #
+    # Weights FADE IN between min_snr and 2*min_snr (on the axis's worst rep)
+    # instead of switching on at a threshold.  Each axis crosses at its own
+    # height - z-x offsets ran -20..+25um across the bed, stable to 1-3um at
+    # any one point - so an axis that JUMPS to an equal say as its snr crosses
+    # a threshold moves the answer by half that offset, from probe to probe.
+    # Over 13 point/surface groups: hard gate at 10, 3.22um median; fade
+    # 15..30, 2.03um; the optimum is flat (1.9-2.3um from 5..20 up to 30..90).
+    # ponytail: stateless.  Fixing each POINT's axis mix from its first probe
+    # measured 1.46um but needs per-XY state and drops probes whose mix
+    # changes; worth it only for repeated probing of the same points.
+    # Returns one edge per rep (weights shared across reps), so the caller's
     # mean and spread across reps keep their meaning; [] when no axis votes.
     @staticmethod
     def _combine_axes(ramps, min_snr):
         if not ramps:
             return []
-        voters = [a for a in range(max(len(r) for r in ramps))
-                  if all(a < len(r) and r[a] is not None
-                         and r[a][1] / r[a][2] >= min_snr for r in ramps)]
-        if not voters:
+        weights = {}
+        for a in range(max(len(r) for r in ramps)):
+            got = [r[a] if a < len(r) else None for r in ramps]
+            if any(g is None for g in got):
+                continue
+            snr = min(g[1] / g[2] for g in got)
+            w = min((snr - min_snr) / min_snr, 1.)
+            if w > 0.:
+                weights[a] = w
+        if not weights:
             return []
-        return [float(sum(r[a][0] for a in voters) / len(voters))
+        tot = sum(weights.values())
+        return [float(sum(w * r[a][0] for a, w in weights.items()) / tot)
                 for r in ramps]
 
     def _ramp_edge(self, zs, amps, descending, air_amp, contact_amp):

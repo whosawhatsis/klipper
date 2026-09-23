@@ -2398,9 +2398,10 @@ excitation_frequency:
 #   Minimum log-amplitude step for a verification ramp to count as spanning
 #   contact. Ramps below it (e.g. under a false halt in mid air) contribute
 #   no height.
-#verify_min_snr: 10
-#   An accelerometer axis contributes to the measured contact height only if
-#   its step is at least this many times its own air noise on every rep.
+#verify_min_snr: 15
+#   An accelerometer axis contributes to the measured contact height once its
+#   step exceeds this many times its own air noise (on its worst rep), with
+#   its weight fading in to full at twice this value.
 #trace_dir:
 #   If set, every descent and every verification ramp is written to this
 #   directory as CSV (amplitude per detection window). Intended for offline
