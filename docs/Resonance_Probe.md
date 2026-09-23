@@ -278,9 +278,10 @@ warmup: 0.8
 #   down-ramp and up-ramp estimates.  See "Contact verification" below.
 #verify_min_step: 0.10
 #   Minimum log-amplitude step for a verify ramp to count as spanning contact.
-#verify_min_snr: 10
-#   An accelerometer axis contributes to the measured height only if its step
-#   is at least this many times its own air noise on every rep.
+#verify_min_snr: 15
+#   An accelerometer axis contributes to the measured height once its step
+#   exceeds this many times its own air noise, fading in to full weight at
+#   twice this value.
 #trace_dir:
 #   If set, every descent and every verification ramp is saved here as CSV, for
 #   offline analysis.  Unset (the default) writes nothing.
@@ -579,9 +580,11 @@ re-crossed) and refines the height.
 The height is measured on **every accelerometer axis** of each ramp: find the
 amplitude minimum (the response is V-shaped on some axes - it falls, then climbs
 back as the nozzle presses deeper), then read where the amplitude crosses
-half-way back up to its air level.  An axis contributes only if its step is at
-least `verify_min_snr` times its own air noise on every rep; the surviving axes
-are averaged.  No axis is chosen in advance - on the development machine one
+half-way back up to its air level.  The axes are averaged with weights that
+fade in from zero at `verify_min_snr` times the axis's own air noise to full at
+twice that.  A fade rather than a cutoff matters because each axis reads
+contact at a slightly different height: an axis switching on and off between
+probes would move the result by that offset.  No axis is chosen in advance - on the development machine one
 axis had 18x the air noise of the others and was excluded by this rule alone.
 
 By default only the DOWN ramps are reported.  The up ramp reads consistently
