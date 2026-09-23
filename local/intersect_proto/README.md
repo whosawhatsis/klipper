@@ -14,3 +14,13 @@ Result (16 groups, median per-point sd): half-way x 2.03um, deployed all-axes 2.
 intersection x 3.89um, seeded+guided 3.46-4.48um.  Intersections AGREE across axes
 (guided y/z within 0-2um of x vs 20-25um for half-way) and sit ~30um above the half-way
 point, but are ~2x less repeatable at ~6.7um sample spacing (4-7 samples on the flank).
+
+## Tangent at the half-way crossing (user, 2026-09-23)
+
+`tangent.py`: pivot a line on the half-way crossing, slope = local derivative there (fit over
+the 10-90% band of the flank), intersect with the air line fitted above the knee. x only:
+median 2.67um (free 2-line 3.89, half-way 2.03). Knee sits a median 22.6um above half-way.
+Half-way position and (knee - half) are NEGATIVELY correlated in 12/16 groups (-0.3..-0.97):
+the knee cancels flank-shape variation that moves the half-way point. Pooling slope over the two
+reps of a probe does not help (2.67 -> 2.68), so the slope varies PROBE-TO-PROBE (6-26%), not
+from per-ramp sampling noise.
