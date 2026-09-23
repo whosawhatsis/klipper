@@ -24,3 +24,14 @@ Half-way position and (knee - half) are NEGATIVELY correlated in 12/16 groups (-
 the knee cancels flank-shape variation that moves the half-way point. Pooling slope over the two
 reps of a probe does not help (2.67 -> 2.68), so the slope varies PROBE-TO-PROBE (6-26%), not
 from per-ramp sampling noise.
+
+## Anchored all-axes tangent knee (2026-09-23)
+
+`tangent_axes.py`: anchor = tangent knee on the axis with the best step/noise (must pass the
+deployed 15 gate, else air-only false-halt ramps "find" knees - (60,60) went to 508um without it);
+every axis refitted with `signed_tangent` (either slope sign) at the anchor height; accepted if within
+15um. Best combine = anchor keeps its own value + helpers fade-weighted on their own step/noise:
+median 2.88um, mean(excl 30,70) 2.66um vs x alone 2.67 / 2.90. Helps (75,85) 5.70->1.99um, hurts
+(90,70) run 1 1.20->4.52um. Helper knees sit +1.5..+1.9um from the anchor (IQR 7-9um).
+Slope drift: |r(slope, probe order)| > 0.5 in 12/16 groups (chance ~4), sign split 6/6; slope vs
+x air amplitude has no consistent sign (median r +0.22; amplitude varied only 1-5%).

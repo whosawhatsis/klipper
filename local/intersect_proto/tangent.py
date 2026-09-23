@@ -4,7 +4,7 @@ import numpy as np
 from anchor import ols
 
 
-def tangent_knee(zs, amps, min_step=0.10, slope='band', band=(0.2, 0.8), nloc=2, iters=2, mf_override=None):
+def tangent_knee(zs, amps, min_step=0.10, slope='band', band=(0.2, 0.8), nloc=2, iters=2, mf_override=None, detail=False):
     z = np.asarray(zs, float); o = np.argsort(z); z = z[o]
     y = np.log(np.maximum(np.asarray(amps, float)[o], 1.))
     n = len(z)
@@ -47,6 +47,7 @@ def tangent_knee(zs, amps, min_step=0.10, slope='band', band=(0.2, 0.8), nloc=2,
         return None
     # --- air line, fitted above the current knee estimate
     knee = zh + (air0 - half) / mf
+    ma, ba = 0., air0
     for _ in range(iters):
         am = z > knee + 0.005
         if am.sum() < 5:
@@ -56,4 +57,6 @@ def tangent_knee(zs, amps, min_step=0.10, slope='band', band=(0.2, 0.8), nloc=2,
         if abs(mf - ma) < 1e-9:
             return None
         knee = (ba - half + mf * zh) / (mf - ma)
+    if detail:
+        return dict(knee=knee, zh=zh, yh=half, mf=mf, air=(ma, ba), zt=z[i0])
     return knee, step, zh, mf
