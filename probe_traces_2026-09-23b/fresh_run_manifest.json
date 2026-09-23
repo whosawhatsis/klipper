@@ -1,0 +1,318 @@
+[
+ {
+  "x": 60,
+  "y": 45,
+  "arm": "warmup",
+  "speed": 0.3,
+  "files": [
+   "verify00556.csv",
+   "verify00557.csv",
+   "verify00558.csv",
+   "verify00559.csv",
+   "verify00560.csv"
+  ],
+  "result": "ok"
+ },
+ {
+  "x": 25,
+  "y": 25,
+  "arm": "slow",
+  "speed": 0.15,
+  "files": [
+   "verify00561.csv",
+   "verify00562.csv",
+   "verify00563.csv",
+   "verify00564.csv",
+   "verify00565.csv",
+   "verify00566.csv"
+  ],
+  "result": "ok"
+ },
+ {
+  "x": 25,
+  "y": 25,
+  "arm": "ctrl",
+  "speed": 0.3,
+  "files": [
+   "verify00567.csv",
+   "verify00568.csv",
+   "verify00569.csv",
+   "verify00570.csv",
+   "verify00571.csv",
+   "verify00572.csv"
+  ],
+  "result": "ERR {\"error\":{\"code\":400,\"message\":\"Resonance contact: no contact detected (halted=False) at SPEED=0.20; lower SPEED, lower the start height, raise ACCEL_PER_HZ, or increase DISTANCE.  SPEED is usually the one that matters: the excitation needs TIME to ring down once the nozzle is damped, and only ~0.1m"
+ },
+ {
+  "x": 55,
+  "y": 25,
+  "arm": "ctrl",
+  "speed": 0.3,
+  "files": [
+   "verify00573.csv",
+   "verify00574.csv",
+   "verify00575.csv",
+   "verify00576.csv",
+   "verify00577.csv",
+   "verify00578.csv"
+  ],
+  "result": "ok"
+ },
+ {
+  "x": 55,
+  "y": 25,
+  "arm": "slow",
+  "speed": 0.15,
+  "files": [
+   "verify00579.csv",
+   "verify00580.csv",
+   "verify00581.csv",
+   "verify00582.csv",
+   "verify00583.csv",
+   "verify00584.csv"
+  ],
+  "result": "ok"
+ },
+ {
+  "x": 85,
+  "y": 25,
+  "arm": "slow",
+  "speed": 0.15,
+  "files": [
+   "verify00585.csv",
+   "verify00586.csv",
+   "verify00587.csv",
+   "verify00588.csv",
+   "verify00589.csv",
+   "verify00590.csv"
+  ],
+  "result": "ok"
+ },
+ {
+  "x": 85,
+  "y": 25,
+  "arm": "ctrl",
+  "speed": 0.3,
+  "files": [
+   "verify00591.csv",
+   "verify00592.csv",
+   "verify00593.csv",
+   "verify00594.csv",
+   "verify00595.csv",
+   "verify00596.csv"
+  ],
+  "result": "ok"
+ },
+ {
+  "x": 105,
+  "y": 45,
+  "arm": "ctrl",
+  "speed": 0.3,
+  "files": [
+   "verify00597.csv",
+   "verify00598.csv",
+   "verify00599.csv",
+   "verify00600.csv",
+   "verify00601.csv",
+   "verify00602.csv"
+  ],
+  "result": "ok"
+ },
+ {
+  "x": 105,
+  "y": 45,
+  "arm": "slow",
+  "speed": 0.15,
+  "files": [
+   "verify00603.csv",
+   "verify00604.csv",
+   "verify00605.csv",
+   "verify00606.csv",
+   "verify00607.csv",
+   "verify00608.csv"
+  ],
+  "result": "ok"
+ },
+ {
+  "x": 40,
+  "y": 45,
+  "arm": "slow",
+  "speed": 0.15,
+  "files": [
+   "verify00609.csv",
+   "verify00610.csv",
+   "verify00611.csv",
+   "verify00612.csv",
+   "verify00613.csv",
+   "verify00614.csv"
+  ],
+  "result": "ok"
+ },
+ {
+  "x": 40,
+  "y": 45,
+  "arm": "ctrl",
+  "speed": 0.3,
+  "files": [
+   "verify00615.csv",
+   "verify00616.csv",
+   "verify00617.csv",
+   "verify00618.csv",
+   "verify00619.csv",
+   "verify00620.csv"
+  ],
+  "result": "ok"
+ },
+ {
+  "x": 70,
+  "y": 60,
+  "arm": "ctrl",
+  "speed": 0.3,
+  "files": [
+   "verify00621.csv",
+   "verify00622.csv",
+   "verify00623.csv",
+   "verify00624.csv",
+   "verify00625.csv",
+   "verify00626.csv"
+  ],
+  "result": "ok"
+ },
+ {
+  "x": 70,
+  "y": 60,
+  "arm": "slow",
+  "speed": 0.15,
+  "files": [
+   "verify00627.csv",
+   "verify00628.csv",
+   "verify00629.csv",
+   "verify00630.csv",
+   "verify00631.csv",
+   "verify00632.csv"
+  ],
+  "result": "ok"
+ },
+ {
+  "x": 45,
+  "y": 80,
+  "arm": "slow",
+  "speed": 0.15,
+  "files": [
+   "verify00633.csv",
+   "verify00634.csv",
+   "verify00635.csv",
+   "verify00636.csv",
+   "verify00637.csv",
+   "verify00638.csv"
+  ],
+  "result": "ok"
+ },
+ {
+  "x": 45,
+  "y": 80,
+  "arm": "ctrl",
+  "speed": 0.3,
+  "files": [
+   "verify00639.csv",
+   "verify00640.csv",
+   "verify00641.csv",
+   "verify00642.csv",
+   "verify00643.csv",
+   "verify00644.csv"
+  ],
+  "result": "ok"
+ },
+ {
+  "x": 25,
+  "y": 100,
+  "arm": "ctrl",
+  "speed": 0.3,
+  "files": [
+   "verify00645.csv",
+   "verify00646.csv",
+   "verify00647.csv",
+   "verify00648.csv",
+   "verify00649.csv",
+   "verify00650.csv"
+  ],
+  "result": "ok"
+ },
+ {
+  "x": 25,
+  "y": 100,
+  "arm": "slow",
+  "speed": 0.15,
+  "files": [
+   "verify00651.csv",
+   "verify00652.csv",
+   "verify00653.csv",
+   "verify00654.csv",
+   "verify00655.csv",
+   "verify00656.csv",
+   "verify00657.csv",
+   "verify00658.csv"
+  ],
+  "result": "ok"
+ },
+ {
+  "x": 60,
+  "y": 100,
+  "arm": "slow",
+  "speed": 0.15,
+  "files": [
+   "verify00659.csv",
+   "verify00660.csv",
+   "verify00661.csv",
+   "verify00662.csv",
+   "verify00663.csv",
+   "verify00664.csv"
+  ],
+  "result": "ok"
+ },
+ {
+  "x": 60,
+  "y": 100,
+  "arm": "ctrl",
+  "speed": 0.3,
+  "files": [
+   "verify00665.csv",
+   "verify00666.csv",
+   "verify00667.csv",
+   "verify00668.csv",
+   "verify00669.csv",
+   "verify00670.csv"
+  ],
+  "result": "ok"
+ },
+ {
+  "x": 95,
+  "y": 95,
+  "arm": "ctrl",
+  "speed": 0.3,
+  "files": [
+   "verify00671.csv",
+   "verify00672.csv",
+   "verify00673.csv",
+   "verify00674.csv",
+   "verify00675.csv",
+   "verify00676.csv"
+  ],
+  "result": "ok"
+ },
+ {
+  "x": 95,
+  "y": 95,
+  "arm": "slow",
+  "speed": 0.15,
+  "files": [
+   "verify00677.csv",
+   "verify00678.csv",
+   "verify00679.csv",
+   "verify00680.csv",
+   "verify00681.csv",
+   "verify00682.csv"
+  ],
+  "result": "ok"
+ }
+]

@@ -13,8 +13,8 @@ def ivw(ps):
     w = np.array([1 / s ** 2 for s, _ in ps]); return float(np.sum(w * [k for _, k in ps]) / w.sum())
 
 
-D = os.path.expanduser('~/code/klipper-tooling/probe_traces_2026-09-23')
-man = json.load(open(os.path.join(D, 'slow_run_manifest.json')))
+D = os.path.expanduser(sys.argv[1] if len(sys.argv) > 1 else '~/code/klipper-tooling/probe_traces_2026-09-23')
+man = [m for m in json.load(open(os.path.join(D, sys.argv[2] if len(sys.argv) > 2 else 'slow_run_manifest.json'))) if m['arm'] != 'warmup']
 
 
 def load(f):
@@ -83,3 +83,16 @@ for key in sorted(res, key=lambda k: (k[0], k[1], k[2])):
 for pt in sorted(set(k[:2] for k in res)):
     a = {arm: np.nanmean(res[pt + (arm,)]['contact, x alone']) * 1e3 for arm in ('slow', 'ctrl') if pt + (arm,) in res}
     if len(a) == 2: print('(%d,%d) contact mean slow %.1f ctrl %.1f  diff %+.1f um' % (pt + (a['slow'], a['ctrl'], a['slow'] - a['ctrl'])))
+
+print()
+pts = sorted(set(k[:2] for k in res))
+for e in EST:
+    sd = {arm: [] for arm in ('ctrl', 'slow')}
+    for pt in pts:
+        for arm in sd:
+            v = np.array([x for x in res[pt + (arm,)][e] if np.isfinite(x)]) if pt + (arm,) in res else []
+            sd[arm].append(np.std(v, ddof=1) * 1e3 if len(v) > 1 else np.nan)
+    c, s_ = np.array(sd['ctrl']), np.array(sd['slow'])
+    ok = np.isfinite(c) & np.isfinite(s_)
+    print('%-22s ctrl median %5.2f mean %5.2f | slow median %5.2f mean %5.2f | slow better at %d/%d points'
+          % (e, np.nanmedian(c), np.nanmean(c), np.nanmedian(s_), np.nanmean(s_), int(np.sum(s_[ok] < c[ok])), int(ok.sum())))
